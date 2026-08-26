@@ -1,0 +1,3 @@
+[default]
+description = "Default permissions for the share-sheet plugin. Allows presenting the native share sheet with a generated file or a plain text/URL."
+permissions = ["allow-share-file", "allow-share-text"]

@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
+    <title>Gelder</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <main id="app">
+        <button type="button" class="profile-nav-btn" id="profile-nav-btn">Profile</button>
+        <button type="button" class="payouts-nav-btn" id="payouts-nav-btn">Payouts</button>
+
+        <!-- Invoice list view -->
+        <section id="list-view" class="view" hidden>
+            <header class="view-header">
+                <h1>Invoices</h1>
+                <p class="subtitle">Bill for your work, share it, get paid online.</p>
+            </header>
+
+            <button type="button" class="btn btn-primary" id="new-invoice-btn">+ New Invoice</button>
+
+            <ul class="invoice-list" id="invoice-list"></ul>
+            <p class="hint" id="empty-hint" hidden>No invoices yet — create one to get started.</p>
+        </section>
+
+        <!-- Create view -->
+        <section id="create-view" class="view" hidden>
+            <header class="view-header">
+                <h1>New Invoice</h1>
+                <p class="subtitle">Sharing this invoice is what saves and publishes it.</p>
+            </header>
+
+            <form id="invoice-form">
+                <p class="from-note" id="from-note"></p>
+
+                <label>Bill To
+                    <input type="text" id="field-to-name" placeholder="Client name (optional)">
+                </label>
+                <label>Description
+                    <textarea id="field-description" rows="3" placeholder="What was the work?" required></textarea>
+                </label>
+                <label>Amount (USD)
+                    <input type="number" id="field-amount" inputmode="decimal" min="0" step="0.01" placeholder="0.00" required>
+                </label>
+                <label>Work Performed
+                    <input type="datetime-local" id="field-work-date" required>
+                </label>
+
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary" id="create-submit-btn">Create & Share</button>
+                    <button type="button" class="btn btn-secondary" id="cancel-create-btn">Cancel</button>
+                </div>
+            </form>
+        </section>
+
+        <!-- Detail view -->
+        <section id="detail-view" class="view" hidden>
+            <header class="view-header">
+                <h1>Invoice</h1>
+            </header>
+
+            <div class="card invoice-card">
+                <p class="invoice-amount" id="detail-amount"></p>
+                <p class="invoice-desc" id="detail-description"></p>
+                <p class="invoice-meta" id="detail-from" hidden></p>
+                <p class="invoice-meta" id="detail-to" hidden></p>
+                <p class="invoice-meta" id="detail-work-date" hidden></p>
+                <p class="invoice-meta invoice-meta-faint" id="detail-created-at" hidden></p>
+
+                <div class="paid-badge" id="paid-badge" hidden>✅ Paid</div>
+
+                <div class="link-row" id="pay-link-row" hidden>
+                    <span class="link-text" id="pay-link-text"></span>
+                    <button type="button" class="btn btn-secondary btn-copy" id="copy-pay-link-btn">Copy</button>
+                </div>
+
+                <button type="button" class="btn btn-primary" id="share-again-btn">Share Again</button>
+                <button type="button" class="btn btn-secondary" id="check-payment-btn">Check Payment</button>
+                <button type="button" class="btn btn-secondary" id="mark-paid-btn">Mark as Paid</button>
+                <button type="button" class="btn btn-secondary" id="detail-back-btn">Back</button>
+            </div>
+        </section>
+
+        <!-- Payouts view — connects a real Stripe payout destination.
+             Gelder-specific (not shared via the App Group like Profile),
+             since it's a real Stripe ToS-acceptance action, not profile
+             data. Explicit opt-in only: nothing here happens automatically. -->
+        <section id="payouts-view" class="view" hidden>
+            <header class="view-header">
+                <h1>Payouts</h1>
+                <p class="subtitle">Connect a Stripe account to receive 91% of every paid invoice automatically — the platform keeps 9% minus processing fees.</p>
+            </header>
+
+            <div id="payouts-connected" hidden>
+                <div class="paid-badge">✅ Stripe account connected</div>
+                <p class="hint">New invoices you create will now request a 91% split to this account.</p>
+            </div>
+
+            <form id="payouts-form">
+                <label>Country
+                    <input type="text" id="payouts-country" placeholder="US" maxlength="2" style="text-transform: uppercase;" required>
+                </label>
+                <label>Legal Name
+                    <input type="text" id="payouts-name" placeholder="Full legal name" required>
+                </label>
+                <label>Email
+                    <input type="email" id="payouts-email" placeholder="you@example.com" required>
+                </label>
+                <p class="hint">By connecting, you agree to Stripe's Connected Account Agreement on behalf of this payout account.</p>
+
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary" id="payouts-connect-btn">Connect Stripe Account</button>
+                    <button type="button" class="btn btn-secondary" id="payouts-close-btn">Close</button>
+                </div>
+            </form>
+        </section>
+
+        <!-- Canonical profile view — a separate, App-Group-shared record; not
+             connected to Gelder's own invoices in any way. -->
+        <section id="profile-view" class="view" hidden>
+            <header class="view-header">
+                <h1>Shared Profile</h1>
+                <p class="subtitle">Synced across BizBuz, Linkitylink, idothis, and Gelder.</p>
+            </header>
+
+            <form id="canonical-profile-form">
+                <div class="avatar avatar-editable" id="profile-photo-preview"></div>
+                <button type="button" class="btn btn-secondary" id="profile-choose-photo-btn">Choose Photo</button>
+
+                <p class="section-label">Fields</p>
+                <ul class="link-entries" id="profile-fields"></ul>
+                <div class="link-entry-form">
+                    <input type="text" id="profile-new-field-name" placeholder="Field (e.g. Name)" maxlength="40">
+                    <input type="text" id="profile-new-field-value" placeholder="Value">
+                    <button type="button" class="btn btn-secondary" id="profile-add-field-btn">Add Field</button>
+                </div>
+                <p class="hint" id="profile-field-limit-hint" hidden>Up to 20 fields — remove one to add another.</p>
+
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary">Save</button>
+                    <button type="button" class="btn btn-secondary" id="profile-close-btn">Close</button>
+                </div>
+            </form>
+        </section>
+
+        <p class="status-msg" id="status-msg"></p>
+    </main>
+    <script type="module" src="main.js"></script>
+</body>
+</html>

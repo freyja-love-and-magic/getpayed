@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "default",
+  "description": "Default capabilities for Gelder",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "share-sheet:allow-share-text",
+    "app-group:default",
+    "dialog:allow-open",
+    "fs:allow-read-file"
+  ]
+}
