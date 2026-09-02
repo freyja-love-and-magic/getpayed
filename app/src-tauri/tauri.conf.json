@@ -24,6 +24,12 @@
       "csp": null
     }
   },
+  "plugins": {
+    "deep-link": {
+      "mobile": [{"scheme": ["gelder"]}],
+      "desktop": [{"schemes": ["gelder"]}]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",

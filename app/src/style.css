@@ -2,6 +2,8 @@
     --green: #10b981;
     --green-dark: #059669;
     --purple: #a78bfa;
+    --amber: #f59e0b;
+    --amber-dark: #d97706;
     --bg: #0a001a;
     --white-70: rgba(255, 255, 255, 0.7);
     --white-10: rgba(255, 255, 255, 0.1);
@@ -26,7 +28,7 @@ body {
     margin: 0 auto;
     padding: calc(24px + env(safe-area-inset-top))
              calc(20px + env(safe-area-inset-right))
-             calc(90px + env(safe-area-inset-bottom))
+             calc(140px + env(safe-area-inset-bottom))
              calc(20px + env(safe-area-inset-left));
 }
 
@@ -143,6 +145,25 @@ textarea {
 
 #new-invoice-btn {
     margin-bottom: 20px;
+}
+
+.stripe-required-banner {
+    background: var(--white-05);
+    border: 1px solid var(--white-10);
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 20px;
+}
+
+.stripe-required-banner p {
+    font-size: 13px;
+    color: var(--white-70);
+    margin: 0 0 12px;
+    line-height: 1.5;
+}
+
+.stripe-required-banner .btn {
+    margin-top: 0;
 }
 
 .link-row {
@@ -420,6 +441,89 @@ textarea {
     left: calc(20px + env(safe-area-inset-left));
     background: linear-gradient(135deg, var(--green) 0%, var(--green-dark) 100%);
     border-color: transparent;
+}
+
+/* ── Stripe connect CTA ───────────────────────────────────────────────────
+   Sits directly above the Profile/Payouts button row, only while Stripe
+   isn't connected yet — tapping it opens Payouts, same as the Payouts
+   button itself. Amber rather than the payouts button's green so it reads
+   as "needs attention" instead of blending into the other footer buttons. */
+
+.stripe-cta-btn {
+    position: fixed;
+    left: calc(20px + env(safe-area-inset-left));
+    right: calc(20px + env(safe-area-inset-right));
+    bottom: calc(78px + env(safe-area-inset-bottom));
+    max-width: 440px;
+    margin: 0 auto;
+    display: block;
+    background: linear-gradient(135deg, var(--amber) 0%, var(--amber-dark) 100%);
+    color: #1a1200;
+    border: none;
+    font-size: 14px;
+    font-weight: 700;
+    padding: 13px 20px;
+    border-radius: 14px;
+    cursor: pointer;
+    z-index: 100;
+    box-shadow: 0 4px 16px rgba(245, 158, 11, 0.35);
+    text-align: center;
+}
+
+/* ── Profile view: sticky footer ──────────────────────────────────────────
+   Same pattern as BizBuz/Linkitylink — #profile-view breaks out of #app's
+   normal document flow into its own full-height flex column (scrollable
+   content + pinned footer) only while active, so Save/Close stay reachable
+   without scrolling. The `:not([hidden])` guard is required since an #id
+   selector otherwise outranks the browser's own `[hidden]{display:none}`
+   rule. */
+
+#profile-view:not([hidden]) {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    padding: 0;
+    z-index: 50;
+    overflow: hidden;
+}
+
+#profile-view .view-scroll {
+    flex: 1;
+    /* Without this, a flex item defaults to min-height:auto, so it grows
+       to fit ALL its content instead of shrinking to the space actually
+       left in the column — the scroll area then overflows past the fixed
+       viewport instead of scrolling within it, and .view-footer's buttons
+       end up pushed out of reach below the fold. */
+    min-height: 0;
+    overflow-y: auto;
+    max-width: 480px;
+    width: 100%;
+    margin: 0 auto;
+    padding: calc(24px + env(safe-area-inset-top))
+             calc(20px + env(safe-area-inset-right))
+             20px
+             calc(20px + env(safe-area-inset-left));
+}
+
+#profile-view .view-footer {
+    flex-shrink: 0;
+    display: flex;
+    gap: 12px;
+    max-width: 480px;
+    width: 100%;
+    margin: 0 auto;
+    padding: 16px calc(20px + env(safe-area-inset-right))
+             calc(20px + env(safe-area-inset-bottom))
+             calc(20px + env(safe-area-inset-left));
+    border-top: 1px solid var(--white-10);
+    background: var(--bg);
+}
+
+#profile-view .view-footer .btn {
+    flex: 1;
+    margin-top: 0;
 }
 
 .status-msg {

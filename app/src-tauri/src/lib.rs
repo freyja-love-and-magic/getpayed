@@ -10,14 +10,25 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::Manager;
 
-const GATEWAY_BDO_URL: &str = "https://allyabase-gateway.netlify.app/bdo/";
-const SAVAGE_URL: &str = "https://allyabase-gateway.netlify.app/savage/";
+const GATEWAY_BDO_URL: &str = "https://allyabase-gateway-12345.netlify.app/bdo/";
+const SAVAGE_URL: &str = "https://allyabase-gateway-12345.netlify.app/savage/";
 // eumachia is the only piece of this stack that can render a real,
 // interactive "Pay Now" page — savage strips all JavaScript from whatever
 // it serves, so it can't host a Stripe checkout itself (verified this
 // session while designing eumachia).
-const EUMACHIA_PAY_URL: &str = "https://allyabase-gateway.netlify.app/eumachia/pay/";
+const EUMACHIA_PAY_URL: &str = "https://allyabase-gateway-12345.netlify.app/eumachia/pay/";
 const BDO_HASH: &str = "gelder-invoice";
+
+// Both BDO and Addie mint their own server-side `uuid`s, distinct from the
+// local keypair used to sign requests — a uuid minted against one gateway
+// 404s on another (see connect_stripe_account's and republish_invoice's
+// comments for how that actually surfaced). Everything that caches one of
+// those uuids (the Addie identity, an invoice's BDO record) keys its storage
+// by this const instead of overwriting a single value, so switching envs
+// never touches or loses whatever already existed under a previous one.
+// Bump this whenever GATEWAY_BDO_URL/GATEWAY_ADDIE_URL point at a genuinely
+// different deployment (not for e.g. a same-deployment code redeploy).
+const GATEWAY_ENV: &str = "test-12345";
 
 fn default_currency() -> String {
     "usd".to_string()
@@ -41,8 +52,13 @@ pub struct Invoice {
     pub from_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub to_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bdo_uuid: Option<String>,
+    /// BDO identity uuid this invoice is published under, per environment
+    /// (see `GATEWAY_ENV`) — an invoice only ever gets an entry for the env
+    /// it was actually created under; it is never re-published fresh under
+    /// a later env (that would mint an unreachable record nobody has the
+    /// link to — see `republish_invoice`).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub bdo_uuid_by_env: HashMap<String, String>,
     /// Permanent savage URL for VIEWING the invoice (the SVG rendering).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub share_url: Option<String>,
@@ -187,7 +203,7 @@ fn load_or_create_bdo_sessionless(app: &tauri::AppHandle, invoice_id: &str) -> R
 // ever gains a stripe_account_id after the user deliberately taps "Connect
 // Stripe Account" — it is never created implicitly.
 
-const GATEWAY_ADDIE_URL: &str = "https://allyabase-gateway.netlify.app/addie/";
+const GATEWAY_ADDIE_URL: &str = "https://allyabase-gateway-12345.netlify.app/addie/";
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 struct AddieIdentity {
@@ -203,15 +219,31 @@ fn addie_identity_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(data_dir(app)?.join("addie_identity.json"))
 }
 
+fn read_addie_identities(app: &tauri::AppHandle) -> HashMap<String, AddieIdentity> {
+    let path = match addie_identity_path(app) {
+        Ok(p) => p,
+        Err(_) => return HashMap::new(),
+    };
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn write_addie_identities(app: &tauri::AppHandle, identities: &HashMap<String, AddieIdentity>) -> Result<(), String> {
+    let path = addie_identity_path(app)?;
+    let json = serde_json::to_string_pretty(identities).map_err(|e| e.to_string())?;
+    fs::write(path, json).map_err(|e| e.to_string())
+}
+
 fn read_addie_identity(app: &tauri::AppHandle) -> Option<AddieIdentity> {
-    let path = addie_identity_path(app).ok()?;
-    fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok())
+    read_addie_identities(app).get(GATEWAY_ENV).cloned()
 }
 
 fn write_addie_identity(app: &tauri::AppHandle, identity: &AddieIdentity) -> Result<(), String> {
-    let path = addie_identity_path(app)?;
-    let json = serde_json::to_string_pretty(identity).map_err(|e| e.to_string())?;
-    fs::write(path, json).map_err(|e| e.to_string())
+    let mut identities = read_addie_identities(app);
+    identities.insert(GATEWAY_ENV.to_string(), identity.clone());
+    write_addie_identities(app, &identities)
 }
 
 /// Ensures a local keypair exists (creating and persisting one on first
@@ -256,17 +288,39 @@ async fn get_payout_status(app: tauri::AppHandle) -> Result<PayoutStatus, String
     }
 }
 
-/// The one deliberate, explicit action that connects a real Stripe payout
-/// destination — creates the Addie identity on first use, then requests a
-/// Stripe Connect account for it. Country/legal name/email are collected up
-/// front because Stripe requires them for `accounts.create()`.
+// Stripe requires an absolute URL here; a custom scheme is accepted. Once
+// the hosted onboarding flow finishes (or is abandoned without submitting),
+// Stripe navigates Safari to this URL, which iOS hands off to Gelder via
+// the `gelder` custom scheme registered in tauri.conf.json — the frontend's
+// deep-link listener then clears the onboarding-pending flag and re-checks
+// status (see the visibilitychange handler for the desktop/manual-switch
+// fallback path).
+const STRIPE_ONBOARDING_RETURN_URL: &str = "gelder://stripe-return";
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct StripeConnectResult {
+    /// Absent only when Addie found an already-connected account for this
+    /// email and skipped onboarding entirely (`already_connected: true`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub onboarding_url: Option<String>,
+    pub already_connected: bool,
+}
+
+/// The one deliberate, explicit action that starts connecting a real Stripe
+/// payout destination — creates the Addie identity on first use, then
+/// requests a Stripe **Express** account for it (not the plain/company
+/// endpoint, which is for platform revenue splits and never produces a
+/// hosted onboarding page). The account isn't actually payable yet at this
+/// point — `stripe_account_id` gets persisted so a retry doesn't create a
+/// duplicate account, but the user still has to complete Stripe's hosted
+/// onboarding (opened in the system browser) before payouts can flow.
 #[tauri::command]
 async fn connect_stripe_account(
     app: tauri::AppHandle,
     country: String,
-    legal_name: String,
     email: String,
-) -> Result<PayoutStatus, String> {
+) -> Result<StripeConnectResult, String> {
     let (client, mut identity) = load_or_create_addie_sessionless(&app)?;
 
     if identity.addie_uuid.is_none() {
@@ -276,17 +330,23 @@ async fn connect_stripe_account(
     }
     let uuid = identity.addie_uuid.clone().ok_or_else(|| "Addie identity missing uuid".to_string())?;
 
-    let updated_user = client
-        .add_processor_account(&uuid, &country, &legal_name, &email)
+    let result = client
+        .add_processor_express_account(
+            &uuid,
+            &country,
+            &email,
+            STRIPE_ONBOARDING_RETURN_URL,
+            STRIPE_ONBOARDING_RETURN_URL,
+        )
         .await
         .map_err(|e| e.to_string())?;
 
-    identity.stripe_account_id = Some(updated_user.stripe_account_id);
+    identity.stripe_account_id = Some(result.stripe_account_id.clone());
     write_addie_identity(&app, &identity)?;
 
-    Ok(PayoutStatus {
-        connected: true,
-        pub_key: Some(identity.pub_key_hex),
+    Ok(StripeConnectResult {
+        onboarding_url: result.stripe_onboarding_url,
+        already_connected: result.already_connected,
     })
 }
 
@@ -492,7 +552,7 @@ async fn create_invoice(
         "{EUMACHIA_PAY_URL}{uuid}?hash={BDO_HASH}&timestamp={timestamp}&signature={signature}"
     );
 
-    invoice.bdo_uuid = Some(uuid.clone());
+    invoice.bdo_uuid_by_env.insert(GATEWAY_ENV.to_string(), uuid.clone());
     invoice.share_url = Some(share_url);
     invoice.pay_url = Some(pay_url);
 
@@ -518,11 +578,18 @@ async fn create_invoice(
 /// the shared page reflects it too if revisited. Shared by both the manual
 /// "Mark as Paid" path and the automatic eumachia-status-check path — one
 /// write path, two triggers.
+///
+/// Only ever updates the record under the env the invoice was actually
+/// created in (`bdo_uuid_by_env.get(GATEWAY_ENV)`) — it deliberately does
+/// NOT fall back to minting a fresh BDO record if the current env has no
+/// entry. The invoice's real published page (the link a payer actually has)
+/// lives on whichever gateway it was first published to; publishing a new
+/// record under today's env would just be an unreachable duplicate nobody
+/// has the link to, not a fix.
 async fn republish_invoice(app: &tauri::AppHandle, invoice: &Invoice) -> Result<(), String> {
-    let uuid = invoice
-        .bdo_uuid
-        .as_deref()
-        .ok_or_else(|| "Invoice has not been published yet".to_string())?;
+    let uuid = invoice.bdo_uuid_by_env.get(GATEWAY_ENV).ok_or_else(|| {
+        "This invoice was published under a different environment and can't be updated from here.".to_string()
+    })?;
     let sessionless = load_or_create_bdo_sessionless(app, &invoice.id)?;
     let client = BDO::new(Some(GATEWAY_BDO_URL.to_string()), Some(sessionless));
 
@@ -574,9 +641,12 @@ async fn check_payment_status(app: tauri::AppHandle, id: String) -> Result<bool,
         return Ok(false);
     }
     let uuid = store.invoices[index]
-        .bdo_uuid
-        .clone()
-        .ok_or_else(|| "Invoice has not been published yet".to_string())?;
+        .bdo_uuid_by_env
+        .get(GATEWAY_ENV)
+        .cloned()
+        .ok_or_else(|| {
+            "This invoice was published under a different environment and can't be checked from here.".to_string()
+        })?;
 
     let status_url = format!("{EUMACHIA_PAY_URL}{uuid}/status");
 
@@ -624,12 +694,30 @@ pub struct CanonicalField {
     pub value: String,
 }
 
+/// A standard postal address on the shared Canonical Profile. This app has
+/// no UI to view or edit it (Gettit does — see its lib.rs) — the field
+/// exists here purely so `save_canonical_profile` below can round-trip it
+/// without silently erasing whatever Gettit wrote, since every app that
+/// touches Canonical Profile overwrites the whole shared record on save.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Address {
+    pub street: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    pub city: String,
+    pub state: String,
+    pub zip: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct CanonicalProfile {
     pub photo: Option<String>,
     #[serde(default)]
     pub fields: Vec<CanonicalField>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<Address>,
     pub updated_at: Option<String>,
 }
 
@@ -662,6 +750,11 @@ async fn load_canonical_profile(app: tauri::AppHandle) -> Result<Option<Canonica
 
 #[tauri::command]
 async fn save_canonical_profile(app: tauri::AppHandle, mut profile: CanonicalProfile) -> Result<CanonicalProfile, String> {
+    // This app's own form never sends a real address (no UI for it — see
+    // Address's doc comment above), so always carry forward whatever's
+    // already stored rather than overwriting it with the incoming None.
+    profile.address = load_canonical_profile(app.clone()).await?.and_then(|p| p.address);
+
     let mut deduped: Vec<CanonicalField> = Vec::new();
     for mut field in profile.fields.into_iter() {
         if field.slug.trim().is_empty() {
@@ -690,6 +783,8 @@ pub fn run() {
         .plugin(tauri_plugin_app_group::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_deep_link::init())
         .invoke_handler(tauri::generate_handler![
             load_invoices,
             create_invoice,

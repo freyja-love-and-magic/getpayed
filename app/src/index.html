@@ -8,6 +8,7 @@
 </head>
 <body>
     <main id="app">
+        <button type="button" class="stripe-cta-btn" id="stripe-cta-btn" hidden>Connect Stripe Account</button>
         <button type="button" class="profile-nav-btn" id="profile-nav-btn">Profile</button>
         <button type="button" class="payouts-nav-btn" id="payouts-nav-btn">Payouts</button>
 
@@ -18,7 +19,12 @@
                 <p class="subtitle">Bill for your work, share it, get paid online.</p>
             </header>
 
-            <button type="button" class="btn btn-primary" id="new-invoice-btn">+ New Invoice</button>
+            <div class="stripe-required-banner" id="stripe-required-banner" hidden>
+                <p>Connect a Stripe account before creating invoices — payments are made through Stripe, so a connected account is how you actually get paid out.</p>
+                <button type="button" class="btn btn-primary" id="stripe-required-connect-btn">Connect Stripe Account</button>
+            </div>
+
+            <button type="button" class="btn btn-primary" id="new-invoice-btn" hidden>+ New Invoice</button>
 
             <ul class="invoice-list" id="invoice-list"></ul>
             <p class="hint" id="empty-hint" hidden>No invoices yet — create one to get started.</p>
@@ -89,7 +95,7 @@
         <section id="payouts-view" class="view" hidden>
             <header class="view-header">
                 <h1>Payouts</h1>
-                <p class="subtitle">Connect a Stripe account to receive 91% of every paid invoice automatically — the platform keeps 9% minus processing fees.</p>
+                <p class="subtitle">Invoice payments are made through Stripe, so a connected Stripe account is required before you can create invoices — it's where disbursements actually go. Connecting also sets up automatic payouts: you'll receive 91% of every paid invoice, with the platform keeping 9% minus processing fees.</p>
             </header>
 
             <div id="payouts-connected" hidden>
@@ -97,17 +103,20 @@
                 <p class="hint">New invoices you create will now request a 91% split to this account.</p>
             </div>
 
+            <div id="payouts-pending" hidden>
+                <p class="hint">Finish connecting in the browser that just opened, then come back here.</p>
+                <button type="button" class="btn btn-secondary" id="payouts-reopen-btn">Reopen Onboarding</button>
+                <button type="button" class="btn btn-primary" id="payouts-done-btn">I've Finished Onboarding</button>
+            </div>
+
             <form id="payouts-form">
                 <label>Country
                     <input type="text" id="payouts-country" placeholder="US" maxlength="2" style="text-transform: uppercase;" required>
                 </label>
-                <label>Legal Name
-                    <input type="text" id="payouts-name" placeholder="Full legal name" required>
-                </label>
                 <label>Email
                     <input type="email" id="payouts-email" placeholder="you@example.com" required>
                 </label>
-                <p class="hint">By connecting, you agree to Stripe's Connected Account Agreement on behalf of this payout account.</p>
+                <p class="hint">Connecting opens Stripe's own onboarding page in your browser, where you'll enter your legal name and remaining details directly with Stripe.</p>
 
                 <div class="form-actions">
                     <button type="submit" class="btn btn-primary" id="payouts-connect-btn">Connect Stripe Account</button>
@@ -119,29 +128,31 @@
         <!-- Canonical profile view — a separate, App-Group-shared record; not
              connected to Gelder's own invoices in any way. -->
         <section id="profile-view" class="view" hidden>
-            <header class="view-header">
-                <h1>Shared Profile</h1>
-                <p class="subtitle">Synced across BizBuz, Linkitylink, idothis, and Gelder.</p>
-            </header>
+            <div class="view-scroll">
+                <header class="view-header">
+                    <h1>Shared Profile</h1>
+                    <p class="subtitle">Synced across BizBuz, Linkitylink, idothis, and Gelder.</p>
+                </header>
 
-            <form id="canonical-profile-form">
-                <div class="avatar avatar-editable" id="profile-photo-preview"></div>
-                <button type="button" class="btn btn-secondary" id="profile-choose-photo-btn">Choose Photo</button>
+                <form id="canonical-profile-form">
+                    <div class="avatar avatar-editable" id="profile-photo-preview"></div>
+                    <button type="button" class="btn btn-secondary" id="profile-choose-photo-btn">Choose Photo</button>
 
-                <p class="section-label">Fields</p>
-                <ul class="link-entries" id="profile-fields"></ul>
-                <div class="link-entry-form">
-                    <input type="text" id="profile-new-field-name" placeholder="Field (e.g. Name)" maxlength="40">
-                    <input type="text" id="profile-new-field-value" placeholder="Value">
-                    <button type="button" class="btn btn-secondary" id="profile-add-field-btn">Add Field</button>
-                </div>
-                <p class="hint" id="profile-field-limit-hint" hidden>Up to 20 fields — remove one to add another.</p>
+                    <p class="section-label">Fields</p>
+                    <ul class="link-entries" id="profile-fields"></ul>
+                    <div class="link-entry-form">
+                        <input type="text" id="profile-new-field-name" placeholder="Field (e.g. Name)" maxlength="40">
+                        <input type="text" id="profile-new-field-value" placeholder="Value">
+                        <button type="button" class="btn btn-secondary" id="profile-add-field-btn">Add Field</button>
+                    </div>
+                    <p class="hint" id="profile-field-limit-hint" hidden>Up to 20 fields — remove one to add another.</p>
+                </form>
+            </div>
 
-                <div class="form-actions">
-                    <button type="submit" class="btn btn-primary">Save</button>
-                    <button type="button" class="btn btn-secondary" id="profile-close-btn">Close</button>
-                </div>
-            </form>
+            <div class="view-footer">
+                <button type="submit" form="canonical-profile-form" class="btn btn-primary">Save</button>
+                <button type="button" class="btn btn-secondary" id="profile-close-btn">Close</button>
+            </div>
         </section>
 
         <p class="status-msg" id="status-msg"></p>

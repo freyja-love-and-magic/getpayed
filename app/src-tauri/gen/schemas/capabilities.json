@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default capabilities for Gelder","local":true,"windows":["main"],"permissions":["core:default","share-sheet:allow-share-text","app-group:default","dialog:allow-open","fs:allow-read-file"]}}
+{"default":{"identifier":"default","description":"Default capabilities for Gelder","local":true,"windows":["main"],"permissions":["core:default","share-sheet:allow-share-text","app-group:default","dialog:allow-open","fs:allow-read-file","shell:allow-open","deep-link:default","deep-link:allow-get-current"]}}

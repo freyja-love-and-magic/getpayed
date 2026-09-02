@@ -10,11 +10,14 @@ const profileView = document.getElementById('profile-view');
 const profileNavBtn = document.getElementById('profile-nav-btn');
 const payoutsView = document.getElementById('payouts-view');
 const payoutsNavBtn = document.getElementById('payouts-nav-btn');
+const stripeCtaBtn = document.getElementById('stripe-cta-btn');
 const statusMsg = document.getElementById('status-msg');
 
 const newInvoiceBtn = document.getElementById('new-invoice-btn');
 const invoiceListEl = document.getElementById('invoice-list');
 const emptyHint = document.getElementById('empty-hint');
+const stripeRequiredBanner = document.getElementById('stripe-required-banner');
+const stripeRequiredConnectBtn = document.getElementById('stripe-required-connect-btn');
 
 const invoiceForm = document.getElementById('invoice-form');
 const fromNote = document.getElementById('from-note');
@@ -51,9 +54,11 @@ const profileFieldLimitHint = document.getElementById('profile-field-limit-hint'
 const profileCloseBtn = document.getElementById('profile-close-btn');
 
 const payoutsConnected = document.getElementById('payouts-connected');
+const payoutsPending = document.getElementById('payouts-pending');
+const payoutsReopenBtn = document.getElementById('payouts-reopen-btn');
+const payoutsDoneBtn = document.getElementById('payouts-done-btn');
 const payoutsForm = document.getElementById('payouts-form');
 const payoutsCountry = document.getElementById('payouts-country');
-const payoutsName = document.getElementById('payouts-name');
 const payoutsEmail = document.getElementById('payouts-email');
 const payoutsConnectBtn = document.getElementById('payouts-connect-btn');
 const payoutsCloseBtn = document.getElementById('payouts-close-btn');
@@ -64,8 +69,25 @@ const PHOTO_QUALITY = 0.85;
 let invoices = [];
 let selectedInvoiceId = null;
 let cachedProfileFromName = undefined; // pulled from canonical profile's "name" field
+let stripeConnected = false;
 
 // ── View / status helpers ────────────────────────────────────────────────────
+
+function updateStripeCtaVisibility() {
+    const hideFooterNav = !profileView.hidden || !payoutsView.hidden;
+    stripeCtaBtn.hidden = hideFooterNav || stripeConnected;
+}
+
+// Invoices can't be created until Stripe is connected — an invoice with no
+// creatorAddiePubKey never gets a payout split (see payments.js/payOutCreator
+// on the eumachia side), so a payer's money would have nowhere to go. Swap
+// "+ New Invoice" for an explanatory banner + CTA instead of just disabling
+// it, since the reason (Stripe is how disbursements actually happen) isn't
+// obvious from the button alone.
+function updateInvoiceCreationGate() {
+    stripeRequiredBanner.hidden = stripeConnected;
+    newInvoiceBtn.hidden = !stripeConnected;
+}
 
 function showView(name) {
     listView.hidden = name !== 'list';
@@ -75,6 +97,7 @@ function showView(name) {
     payoutsView.hidden = name !== 'payouts';
     profileNavBtn.hidden = name === 'profile' || name === 'payouts';
     payoutsNavBtn.hidden = name === 'profile' || name === 'payouts';
+    updateStripeCtaVisibility();
 }
 
 let statusTimeout = null;
@@ -152,6 +175,12 @@ function toDatetimeLocalValue(date) {
 }
 
 async function openCreateForm() {
+    if (!stripeConnected) {
+        setStatus('Connect a Stripe account before creating invoices.');
+        await openPayoutsView();
+        return;
+    }
+
     fieldToName.value = '';
     fieldDescription.value = '';
     fieldAmount.value = '';
@@ -540,40 +569,107 @@ function currentViewName() {
 
 let prePayoutsView = 'list';
 
+// Addie marks the Express account "connected" the instant it's created, not
+// once the user actually finishes Stripe's hosted onboarding — there's no
+// endpoint yet to check real charges_enabled/payouts_enabled status. So
+// this local flag (persisted across app backgrounding, since onboarding
+// happens in an external browser) takes priority over the backend's
+// technically-premature "connected" signal until the user confirms they're
+// done. It's honest about being a self-report, not a verified fact.
+const STRIPE_ONBOARDING_PENDING_KEY = 'gelder.stripeOnboardingPending';
+const STRIPE_ONBOARDING_URL_KEY = 'gelder.stripeOnboardingUrl';
+
+function isOnboardingPending() {
+    return localStorage.getItem(STRIPE_ONBOARDING_PENDING_KEY) === '1';
+}
+
+function setOnboardingPending(url) {
+    localStorage.setItem(STRIPE_ONBOARDING_PENDING_KEY, '1');
+    localStorage.setItem(STRIPE_ONBOARDING_URL_KEY, url);
+}
+
+function clearOnboardingPending() {
+    localStorage.removeItem(STRIPE_ONBOARDING_PENDING_KEY);
+    localStorage.removeItem(STRIPE_ONBOARDING_URL_KEY);
+}
+
+async function openInBrowser(url) {
+    await core.invoke('plugin:shell|open', { path: url });
+}
+
 async function renderPayoutStatus() {
     try {
         const status = await core.invoke('get_payout_status');
-        payoutsConnected.hidden = !status.connected;
-        payoutsForm.hidden = status.connected;
+        const pending = isOnboardingPending();
+        stripeConnected = !!status.connected && !pending;
+        payoutsConnected.hidden = !stripeConnected;
+        payoutsPending.hidden = !pending;
+        payoutsForm.hidden = stripeConnected || pending;
     } catch (err) {
         setStatus(`Couldn't load payout status: ${err}`);
     }
+    updateStripeCtaVisibility();
+    updateInvoiceCreationGate();
 }
 
-payoutsNavBtn.addEventListener('click', async () => {
+async function openPayoutsView() {
     prePayoutsView = currentViewName();
     await renderPayoutStatus();
     showView('payouts');
+}
+
+payoutsNavBtn.addEventListener('click', openPayoutsView);
+stripeCtaBtn.addEventListener('click', openPayoutsView);
+stripeRequiredConnectBtn.addEventListener('click', openPayoutsView);
+
+// Re-check whenever the app regains focus — the user completes onboarding
+// in the system browser, then switches back to Gelder.
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && !payoutsView.hidden) {
+        renderPayoutStatus();
+    }
 });
 
 payoutsForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const country = payoutsCountry.value.trim().toUpperCase();
-    const legalName = payoutsName.value.trim();
     const email = payoutsEmail.value.trim();
-    if (!country || !legalName || !email) return;
+    if (!country || !email) return;
 
     payoutsConnectBtn.disabled = true;
-    setStatus('Connecting Stripe account…');
+    setStatus('Starting Stripe onboarding…');
     try {
-        await core.invoke('connect_stripe_account', { country, legalName, email });
+        const result = await core.invoke('connect_stripe_account', { country, email });
+        if (result.onboardingUrl) {
+            setOnboardingPending(result.onboardingUrl);
+            await openInBrowser(result.onboardingUrl);
+            setStatus('Finish onboarding in your browser, then come back here.');
+        } else if (result.alreadyConnected) {
+            clearOnboardingPending();
+            setStatus('Stripe account connected!');
+        }
         await renderPayoutStatus();
-        setStatus('Stripe account connected!');
     } catch (err) {
         setStatus(`Couldn't connect: ${err}`);
     } finally {
         payoutsConnectBtn.disabled = false;
     }
+});
+
+payoutsReopenBtn.addEventListener('click', async () => {
+    const url = localStorage.getItem(STRIPE_ONBOARDING_URL_KEY);
+    if (!url) return;
+    try {
+        await openInBrowser(url);
+    } catch (err) {
+        setStatus(`Couldn't reopen: ${err}`);
+    }
+});
+
+payoutsDoneBtn.addEventListener('click', async () => {
+    clearOnboardingPending();
+    await renderPayoutStatus();
+    setStatus(stripeConnected ? 'Stripe account connected!' : 'Status updated.');
 });
 
 payoutsCloseBtn.addEventListener('click', () => showView(prePayoutsView));
@@ -602,5 +698,51 @@ profileForm.addEventListener('submit', async (e) => {
 
 profileCloseBtn.addEventListener('click', () => showView(preProfileView));
 
+// ── Deep links ───────────────────────────────────────────────────────────────
+//
+// Stripe's hosted onboarding returns to gelder://stripe-return (see
+// STRIPE_ONBOARDING_RETURN_URL in src-tauri/src/lib.rs) once the user
+// finishes or abandons the flow. iOS hands that off to us here instead of
+// requiring the "I've Finished Onboarding" button — that button stays as a
+// fallback for cases where the OS doesn't switch back automatically.
+
+function handleDeepLink(url) {
+    let parsed;
+    try {
+        parsed = new URL(url);
+    } catch {
+        return;
+    }
+    if (parsed.protocol !== 'gelder:') return;
+    if (parsed.hostname === 'stripe-return' || parsed.pathname.replace(/^\/+/, '') === 'stripe-return') {
+        clearOnboardingPending();
+        renderPayoutStatus();
+        setStatus(stripeConnected ? 'Stripe account connected!' : 'Welcome back — checking payout status…');
+    }
+}
+
+if (window.__TAURI__?.event) {
+    // Registers the gelder:// scheme with the OS on desktop; unsupported (and
+    // unnecessary) on iOS, where the scheme comes from Info.plist instead.
+    core.invoke('plugin:deep-link|register', { protocols: ['gelder'] }).catch(() => {});
+
+    window.__TAURI__.event.listen('deep-link://new-url', (event) => {
+        const urls = event.payload;
+        if (Array.isArray(urls)) urls.forEach(handleDeepLink);
+        else if (typeof urls === 'string') handleDeepLink(urls);
+    });
+}
+
+// Cold start: the new-url event fires before the listener above is
+// registered, so check for a launch URL explicitly once the webview is up.
+core.invoke('plugin:deep-link|get_current').then(urls => {
+    if (!urls || (Array.isArray(urls) && urls.length === 0)) return;
+    setTimeout(() => {
+        if (Array.isArray(urls)) urls.forEach(handleDeepLink);
+        else if (typeof urls === 'string') handleDeepLink(urls);
+    }, 300);
+}).catch(() => {});
+
 showView('list');
 loadInvoices();
+renderPayoutStatus();

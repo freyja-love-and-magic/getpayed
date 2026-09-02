@@ -8,6 +8,9 @@
     "share-sheet:allow-share-text",
     "app-group:default",
     "dialog:allow-open",
-    "fs:allow-read-file"
+    "fs:allow-read-file",
+    "shell:allow-open",
+    "deep-link:default",
+    "deep-link:allow-get-current"
   ]
 }
