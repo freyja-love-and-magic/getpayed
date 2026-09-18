@@ -30,12 +30,12 @@ Tauri commands, invoked from `main.js`:
 | `get_payout_status` / `connect_stripe_account` | Stripe Express onboarding via Addie |
 | `load_canonical_profile` / `save_canonical_profile` | Shared cross-app profile (App Group) |
 
-No server of its own — Gelder is a thin client over three allyabase services, all currently pointed at `https://allyabase-gateway-12345.netlify.app/`:
+No server of its own — Gelder is a thin client over three allyabase services, all currently pointed at `https://dev.8as.world/`:
 - **BDO** (`GATEWAY_BDO_URL`) — publishes each invoice as its own public record (own sessionless keypair per invoice, `BDO_HASH = "gelder-invoice"`), and the shared canonical-profile-adjacent data.
 - **Addie** (`GATEWAY_ADDIE_URL`) — mints a Stripe Express connected account for payouts.
 - **eumachia** (`EUMACHIA_PAY_URL`, at `allyabase/deployment/eumachia`) — the *only* piece of this stack that can render a real, interactive "Pay Now" page (savage strips all JavaScript from what it serves, so it can't host a Stripe Elements checkout). Eumachia owns the payment-status record and the actual PaymentIntent/payout flow.
 
-`GATEWAY_ENV = "test-12345"` namespaces every cached uuid (invoice's BDO uuid, Addie identity) so pointing the app at a different deployment later doesn't collide with or silently lose what's already published under this one.
+`GATEWAY_ENV = "dev-8as-world"` namespaces every cached uuid (invoice's BDO uuid, Addie identity) so pointing the app at a different deployment later doesn't collide with or silently lose what's already published under this one.
 
 ### Invoice lifecycle
 

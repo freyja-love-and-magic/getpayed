@@ -1,7 +1,7 @@
 import Tauri
 import UIKit
 
-private let appGroupSuite = "group.freyja.idothis"
+private let appGroupSuite = "group.club.home.front"
 
 struct WriteValueArgs: Decodable {
     let key: String

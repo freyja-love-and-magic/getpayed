@@ -31,7 +31,7 @@ const path = require('path');
 const { execSync, spawnSync } = require('child_process');
 
 const ROOT = path.join(__dirname, '..');
-const TEAM_ID = 'RLJ2FY35FD';
+const TEAM_ID = 'PCUFMY9NKZ';
 
 // ── 1. Bump build number ──────────────────────────────────────────────────────
 const buildNumberFile = path.join(ROOT, '.build-number');
@@ -125,7 +125,7 @@ console.log(`    Restored ${iconFiles.length} real app icons -> gen/apple/Assets
 // since this runs on every build, not just once.
 iconFiles.forEach((f) => {
   const p = path.join(iconDest, f);
-  spawnSync('magick', [p, '-background', '#0a001a', '-alpha', 'remove', '-alpha', 'off', p]);
+  spawnSync('magick', [p, '-background', '#1F2933', '-alpha', 'remove', '-alpha', 'off', p]);
 });
 console.log('    Flattened alpha channel out of all app icons (App Store rejects it on the 1024x1024 marketing icon)');
 
@@ -141,15 +141,15 @@ fs.writeFileSync(entitlementsPath, `<?xml version="1.0" encoding="UTF-8"?>
 <dict>
     <key>com.apple.security.application-groups</key>
     <array>
-        <string>group.freyja.idothis</string>
+        <string>group.club.home.front</string>
     </array>
 </dict>
 </plist>
 `);
-console.log('    Patched App Group entitlements (group.freyja.idothis)');
+console.log('    Patched App Group entitlements (group.club.home.front)');
 
 // ── 4. Build IPA ───────────────────────────────────────────────────────────────
-console.log('\n==> Building Gelder IPA...');
+console.log('\n==> Building GetPayed IPA...');
 const conf = JSON.parse(fs.readFileSync(path.join(ROOT, 'src-tauri', 'tauri.conf.json'), 'utf8'));
 const ipaName = `${conf.productName}.ipa`;
 const buildArm64 = path.join(genApple, 'build', 'arm64');

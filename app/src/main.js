@@ -7,10 +7,10 @@ const listView = document.getElementById('list-view');
 const createView = document.getElementById('create-view');
 const detailView = document.getElementById('detail-view');
 const profileView = document.getElementById('profile-view');
+const backNavBtn = document.getElementById('back-nav-btn');
 const profileNavBtn = document.getElementById('profile-nav-btn');
 const payoutsView = document.getElementById('payouts-view');
 const payoutsNavBtn = document.getElementById('payouts-nav-btn');
-const stripeCtaBtn = document.getElementById('stripe-cta-btn');
 const statusMsg = document.getElementById('status-msg');
 
 const newInvoiceBtn = document.getElementById('new-invoice-btn');
@@ -25,23 +25,37 @@ const fieldToName = document.getElementById('field-to-name');
 const fieldDescription = document.getElementById('field-description');
 const fieldAmount = document.getElementById('field-amount');
 const fieldWorkDate = document.getElementById('field-work-date');
+const fieldDueDate = document.getElementById('field-due-date');
+const dueDateLabel = document.getElementById('due-date-label');
+const createTitle = document.getElementById('create-title');
+const createSubtitle = document.getElementById('create-subtitle');
 const createSubmitBtn = document.getElementById('create-submit-btn');
 const cancelCreateBtn = document.getElementById('cancel-create-btn');
+const kindInvoiceBtn = document.getElementById('kind-invoice-btn');
+const kindEstimateBtn = document.getElementById('kind-estimate-btn');
 
+const detailTitle = document.getElementById('detail-title');
 const detailAmount = document.getElementById('detail-amount');
 const detailDescription = document.getElementById('detail-description');
 const detailFrom = document.getElementById('detail-from');
 const detailTo = document.getElementById('detail-to');
 const detailWorkDate = document.getElementById('detail-work-date');
+const detailDueDate = document.getElementById('detail-due-date');
 const detailCreatedAt = document.getElementById('detail-created-at');
-const paidBadge = document.getElementById('paid-badge');
+const detailStatusBadge = document.getElementById('detail-status-badge');
+const detailStatusNote = document.getElementById('detail-status-note');
+const detailConvertedLink = document.getElementById('detail-converted-link');
+const detailActions = document.getElementById('detail-actions');
 const payLinkRow = document.getElementById('pay-link-row');
 const payLinkText = document.getElementById('pay-link-text');
 const copyPayLinkBtn = document.getElementById('copy-pay-link-btn');
 const shareAgainBtn = document.getElementById('share-again-btn');
-const checkPaymentBtn = document.getElementById('check-payment-btn');
-const markPaidBtn = document.getElementById('mark-paid-btn');
-const detailBackBtn = document.getElementById('detail-back-btn');
+
+const newEstimateBtn = document.getElementById('new-estimate-btn');
+const estimatesList = document.getElementById('estimates-list');
+const estimatesEmptyHint = document.getElementById('estimates-empty-hint');
+const payoutsInvoicesList = document.getElementById('payouts-invoices-list');
+const payoutsInvoicesEmptyHint = document.getElementById('payouts-invoices-empty-hint');
 
 const profileForm = document.getElementById('canonical-profile-form');
 const profilePhotoPreview = document.getElementById('profile-photo-preview');
@@ -70,13 +84,9 @@ let invoices = [];
 let selectedInvoiceId = null;
 let cachedProfileFromName = undefined; // pulled from canonical profile's "name" field
 let stripeConnected = false;
+let pendingKind = 'invoice'; // 'invoice' | 'estimate' — controlled by the kind toggle in the create form
 
 // ── View / status helpers ────────────────────────────────────────────────────
-
-function updateStripeCtaVisibility() {
-    const hideFooterNav = !profileView.hidden || !payoutsView.hidden;
-    stripeCtaBtn.hidden = hideFooterNav || stripeConnected;
-}
 
 // Invoices can't be created until Stripe is connected — an invoice with no
 // creatorAddiePubKey never gets a payout split (see payments.js/payOutCreator
@@ -95,10 +105,14 @@ function showView(name) {
     detailView.hidden = name !== 'detail';
     profileView.hidden = name !== 'profile';
     payoutsView.hidden = name !== 'payouts';
-    profileNavBtn.hidden = name === 'profile' || name === 'payouts';
-    payoutsNavBtn.hidden = name === 'profile' || name === 'payouts';
-    updateStripeCtaVisibility();
+    // Header: Back shows on subviews of the list, Profile/Payouts hide only
+    // when already on their own view (their overlay covers the header anyway).
+    backNavBtn.hidden = !(name === 'create' || name === 'detail');
+    profileNavBtn.hidden = name === 'profile';
+    payoutsNavBtn.hidden = name === 'payouts';
 }
+
+backNavBtn.addEventListener('click', () => showView('list'));
 
 let statusTimeout = null;
 function setStatus(message) {
@@ -124,43 +138,106 @@ function renderInvoiceList() {
     invoiceListEl.innerHTML = '';
     emptyHint.hidden = invoices.length > 0;
 
-    // Most recently worked-on first — what a freelancer actually cares
-    // about ordering by, not whichever moment the record happened to be
-    // typed into the app (createdAt).
-    const sorted = [...invoices].sort((a, b) => Number(b.workPerformedAt) - Number(a.workPerformedAt));
+    // Home list is invoices only; estimates live in Payouts view. Most
+    // recently worked-on first — what a freelancer actually cares about
+    // ordering by, not whichever moment the record happened to be typed
+    // into the app (createdAt).
+    const onlyInvoices = invoices.filter((inv) => (inv.kind || 'invoice') === 'invoice');
+    const sorted = [...onlyInvoices].sort((a, b) => Number(b.workPerformedAt) - Number(a.workPerformedAt));
     for (const inv of sorted) {
-        const li = document.createElement('li');
-        li.className = 'invoice-list-item';
-
-        const text = document.createElement('div');
-        text.className = 'invoice-list-text';
-        text.innerHTML = '<div class="invoice-list-desc"></div><div class="invoice-list-sub"></div>';
-        text.querySelector('.invoice-list-desc').textContent = inv.description || 'Untitled';
-        const workDate = formatEpochMsDate(inv.workPerformedAt);
-        text.querySelector('.invoice-list-sub').textContent = [
-            inv.toName ? `To ${inv.toName}` : null,
-            workDate,
-        ].filter(Boolean).join(' · ') || 'No recipient set';
-
-        const right = document.createElement('div');
-        right.className = 'invoice-list-right';
-        const amountEl = document.createElement('div');
-        amountEl.className = 'invoice-list-amount';
-        amountEl.textContent = formatAmount(inv.amountCents);
-        const badge = document.createElement('div');
-        badge.className = inv.paid ? 'invoice-list-badge paid' : 'invoice-list-badge';
-        badge.textContent = inv.paid ? 'Paid' : 'Unpaid';
-        right.append(amountEl, badge);
-
-        li.append(text, right);
-        li.addEventListener('click', () => openDetail(inv.id));
-        invoiceListEl.appendChild(li);
+        invoiceListEl.appendChild(renderInvoiceRow(inv));
     }
+    if (emptyHint) emptyHint.hidden = sorted.length > 0;
+}
+
+// Derives the human display state from the stored status + due date, so
+// "past due" surfaces automatically as time passes without us needing to
+// mutate the record on a timer.
+function displayStatus(doc) {
+    const status = doc.status || 'pending';
+    if (status === 'pending' && doc.dueDate) {
+        const dueMs = Number(doc.dueDate);
+        if (Number.isFinite(dueMs) && dueMs > 0 && Date.now() > dueMs) return 'past_due';
+    }
+    return status;
+}
+
+function displayStatusLabel(status) {
+    switch (status) {
+        case 'pending':      return 'Pending';
+        case 'past_due':     return 'Past due';
+        case 'paid_stripe':  return 'Paid';
+        case 'paid_manual':  return 'Paid (manual)';
+        case 'waived':       return 'Waived';
+        case 'canceled':     return 'Canceled';
+        case 'active':       return 'Estimate';
+        case 'converted':    return 'Converted';
+        default:             return status;
+    }
+}
+
+function displayStatusClass(status) {
+    switch (status) {
+        case 'paid_stripe':
+        case 'paid_manual':  return 'paid';
+        case 'past_due':     return 'past-due';
+        default:             return status.replace(/_/g, '-');
+    }
+}
+
+function renderInvoiceRow(inv) {
+    const li = document.createElement('li');
+    li.className = 'invoice-list-item';
+
+    const text = document.createElement('div');
+    text.className = 'invoice-list-text';
+    text.innerHTML = '<div class="invoice-list-desc"></div><div class="invoice-list-sub"></div>';
+    text.querySelector('.invoice-list-desc').textContent = inv.description || 'Untitled';
+    const workDate = formatEpochMsDate(inv.workPerformedAt);
+    text.querySelector('.invoice-list-sub').textContent = [
+        inv.toName ? `To ${inv.toName}` : null,
+        workDate,
+    ].filter(Boolean).join(' · ') || 'No recipient set';
+
+    const right = document.createElement('div');
+    right.className = 'invoice-list-right';
+    const amountEl = document.createElement('div');
+    amountEl.className = 'invoice-list-amount';
+    amountEl.textContent = formatAmount(inv.amountCents);
+    const status = displayStatus(inv);
+    const badge = document.createElement('div');
+    badge.className = `invoice-list-badge ${displayStatusClass(status)}`;
+    badge.textContent = displayStatusLabel(status);
+    right.append(amountEl, badge);
+
+    li.append(text, right);
+    li.addEventListener('click', () => openDetail(inv.id));
+    return li;
+}
+
+function renderPayoutsLists() {
+    // Estimates section
+    estimatesList.innerHTML = '';
+    const estimates = invoices
+        .filter((inv) => inv.kind === 'estimate')
+        .sort((a, b) => Number(b.workPerformedAt) - Number(a.workPerformedAt));
+    for (const est of estimates) estimatesList.appendChild(renderInvoiceRow(est));
+    estimatesEmptyHint.hidden = estimates.length > 0;
+
+    // Invoices section (duplicated across list + payouts by design — the
+    // payouts view is the "one place with the whole financial picture").
+    payoutsInvoicesList.innerHTML = '';
+    const invs = invoices
+        .filter((inv) => (inv.kind || 'invoice') === 'invoice')
+        .sort((a, b) => Number(b.workPerformedAt) - Number(a.workPerformedAt));
+    for (const inv of invs) payoutsInvoicesList.appendChild(renderInvoiceRow(inv));
+    payoutsInvoicesEmptyHint.hidden = invs.length > 0;
 }
 
 async function loadInvoices() {
     invoices = await core.invoke('load_invoices');
     renderInvoiceList();
+    renderPayoutsLists();
 }
 
 // ── Create flow ───────────────────────────────────────────────────────────────
@@ -174,8 +251,35 @@ function toDatetimeLocalValue(date) {
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-async function openCreateForm() {
-    if (!stripeConnected) {
+function setPendingKind(kind) {
+    pendingKind = kind;
+    kindInvoiceBtn.classList.toggle('active', kind === 'invoice');
+    kindEstimateBtn.classList.toggle('active', kind === 'estimate');
+    kindInvoiceBtn.setAttribute('aria-selected', String(kind === 'invoice'));
+    kindEstimateBtn.setAttribute('aria-selected', String(kind === 'estimate'));
+
+    if (kind === 'invoice') {
+        createTitle.textContent = 'New Invoice';
+        createSubtitle.textContent = 'Sharing this invoice is what saves and publishes it.';
+        createSubmitBtn.textContent = 'Create & Share';
+        dueDateLabel.hidden = false;
+    } else {
+        createTitle.textContent = 'New Estimate';
+        createSubtitle.textContent = 'Estimates are quotes — no payment link, and no Stripe connection needed.';
+        createSubmitBtn.textContent = 'Create Estimate & Share';
+        // Due date is invoice-specific; estimates use `work performed` for
+        // the "when the job would happen" date, so no separate due field.
+        dueDateLabel.hidden = true;
+        fieldDueDate.value = '';
+    }
+}
+
+kindInvoiceBtn.addEventListener('click', () => setPendingKind('invoice'));
+kindEstimateBtn.addEventListener('click', () => setPendingKind('estimate'));
+
+async function openCreateForm(kind = 'invoice') {
+    // Only invoices need Stripe; estimates are quotes with no payment leg.
+    if (kind === 'invoice' && !stripeConnected) {
         setStatus('Connect a Stripe account before creating invoices.');
         await openPayoutsView();
         return;
@@ -185,6 +289,8 @@ async function openCreateForm() {
     fieldDescription.value = '';
     fieldAmount.value = '';
     fieldWorkDate.value = toDatetimeLocalValue(new Date());
+    fieldDueDate.value = '';
+    setPendingKind(kind);
 
     try {
         const profile = await core.invoke('load_canonical_profile');
@@ -197,13 +303,14 @@ async function openCreateForm() {
     if (cachedProfileFromName) {
         fromNote.textContent = `From: ${cachedProfileFromName}`;
     } else {
-        fromNote.textContent = 'No shared profile name set yet — set one in Profile so invoices show who they’re from.';
+        fromNote.textContent = 'No shared profile name set yet — set one in Profile so this shows who it’s from.';
     }
 
     showView('create');
 }
 
-newInvoiceBtn.addEventListener('click', openCreateForm);
+newInvoiceBtn.addEventListener('click', () => openCreateForm('invoice'));
+newEstimateBtn.addEventListener('click', () => openCreateForm('estimate'));
 cancelCreateBtn.addEventListener('click', () => showView('list'));
 
 invoiceForm.addEventListener('submit', async (e) => {
@@ -215,32 +322,38 @@ invoiceForm.addEventListener('submit', async (e) => {
     const amountCents = Math.round(amount * 100);
     const toName = fieldToName.value.trim() || undefined;
     const workPerformedAt = String(new Date(fieldWorkDate.value).getTime());
+    const dueDate = pendingKind === 'invoice' && fieldDueDate.value
+        ? String(new Date(fieldDueDate.value).getTime())
+        : undefined;
 
     createSubmitBtn.disabled = true;
-    setStatus('Publishing invoice…');
+    setStatus(pendingKind === 'estimate' ? 'Publishing estimate…' : 'Publishing invoice…');
     try {
-        const invoice = await core.invoke('create_invoice', {
+        const doc = await core.invoke('create_invoice', {
+            kind: pendingKind,
             description,
             amountCents,
             toName,
             fromName: cachedProfileFromName,
             workPerformedAt,
+            dueDate,
         });
-        invoices.push(invoice);
+        invoices.push(doc);
         renderInvoiceList();
+        renderPayoutsLists();
 
-        if (invoice.shareUrl) {
+        if (doc.shareUrl) {
             try {
-                await core.invoke('plugin:share-sheet|share_text', { text: invoice.shareUrl });
+                await core.invoke('plugin:share-sheet|share_text', { text: doc.shareUrl });
             } catch {
-                // Sharing is optional at creation time — the invoice is already saved.
+                // Sharing is optional at creation time — the record is already saved.
             }
         }
 
-        showView('list');
-        setStatus('Invoice created!');
+        showView(pendingKind === 'estimate' ? 'payouts' : 'list');
+        setStatus(pendingKind === 'estimate' ? 'Estimate created!' : 'Invoice created!');
     } catch (err) {
-        setStatus(`Couldn't create invoice: ${err}`);
+        setStatus(`Couldn't create: ${err}`);
     } finally {
         createSubmitBtn.disabled = false;
     }
@@ -252,32 +365,179 @@ function findInvoice(id) {
     return invoices.find((inv) => inv.id === id) || null;
 }
 
-function renderDetail(inv) {
-    detailAmount.textContent = formatAmount(inv.amountCents);
-    detailDescription.textContent = inv.description;
+function renderDetail(doc) {
+    const kind = doc.kind || 'invoice';
+    detailTitle.textContent = kind === 'estimate' ? 'Estimate' : 'Invoice';
+    detailAmount.textContent = formatAmount(doc.amountCents);
+    detailDescription.textContent = doc.description;
 
-    detailFrom.hidden = !inv.fromName;
-    detailFrom.textContent = inv.fromName ? `From ${inv.fromName}` : '';
-    detailTo.hidden = !inv.toName;
-    detailTo.textContent = inv.toName ? `To ${inv.toName}` : '';
+    detailFrom.hidden = !doc.fromName;
+    detailFrom.textContent = doc.fromName ? `From ${doc.fromName}` : '';
+    detailTo.hidden = !doc.toName;
+    detailTo.textContent = doc.toName ? `To ${doc.toName}` : '';
 
-    const workDate = formatEpochMsDate(inv.workPerformedAt);
+    const workDate = formatEpochMsDate(doc.workPerformedAt);
     detailWorkDate.hidden = !workDate;
     detailWorkDate.textContent = workDate ? `Work performed: ${workDate}` : '';
 
-    const createdDate = formatEpochMsDate(inv.createdAt);
+    const dueDate = doc.dueDate ? formatEpochMsDate(doc.dueDate) : null;
+    detailDueDate.hidden = !dueDate;
+    detailDueDate.textContent = dueDate ? `Due: ${dueDate}` : '';
+
+    const createdDate = formatEpochMsDate(doc.createdAt);
     detailCreatedAt.hidden = !createdDate;
     detailCreatedAt.textContent = createdDate ? `Created: ${createdDate}` : '';
 
-    paidBadge.hidden = !inv.paid;
-    markPaidBtn.hidden = inv.paid;
-    checkPaymentBtn.hidden = inv.paid;
+    // Status badge — pending stays invisible on invoices (no news is
+    // implicit "waiting"), everything else shows a colored stamp.
+    const status = displayStatus(doc);
+    if (status === 'pending') {
+        detailStatusBadge.hidden = true;
+    } else {
+        detailStatusBadge.hidden = false;
+        detailStatusBadge.className = `status-badge status-${displayStatusClass(status)}`;
+        detailStatusBadge.textContent = displayStatusLabel(status);
+    }
 
-    if (inv.payUrl) {
-        payLinkText.textContent = inv.payUrl;
+    detailStatusNote.hidden = !doc.statusNote;
+    detailStatusNote.textContent = doc.statusNote ? `Note: ${doc.statusNote}` : '';
+
+    // "Converted to Invoice" link — only shown on an estimate that has
+    // been converted. Clicking navigates to the resulting invoice.
+    if (kind === 'estimate' && doc.convertedToInvoiceId) {
+        detailConvertedLink.hidden = false;
+        detailConvertedLink.innerHTML = 'Converted to Invoice — <a href="#" data-invoice-id="' + doc.convertedToInvoiceId + '">open</a>';
+        const link = detailConvertedLink.querySelector('a');
+        link.addEventListener('click', (e) => {
+            e.preventDefault();
+            openDetail(link.getAttribute('data-invoice-id'));
+        });
+    } else {
+        detailConvertedLink.hidden = true;
+        detailConvertedLink.innerHTML = '';
+    }
+
+    if (doc.payUrl) {
+        payLinkText.textContent = doc.payUrl;
         payLinkRow.hidden = false;
     } else {
         payLinkRow.hidden = true;
+    }
+
+    renderDetailActions(doc);
+}
+
+// Populates the .detail-actions container with the buttons that make
+// sense for this document's kind + status. All state-changing paths
+// funnel through `applyStatus` / `convertEstimate` below so there's one
+// call site to disable/refresh from.
+function renderDetailActions(doc) {
+    detailActions.innerHTML = '';
+    const kind = doc.kind || 'invoice';
+    const status = doc.status || 'pending';
+
+    const add = (label, klass, handler) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = `btn ${klass}`;
+        btn.textContent = label;
+        btn.addEventListener('click', handler);
+        detailActions.appendChild(btn);
+    };
+
+    if (kind === 'invoice') {
+        if (status === 'pending') {
+            add('Check Payment', 'btn-secondary', checkPayment);
+            add('Mark as Paid Manually', 'btn-secondary', () => applyStatus('paid_manual', 'How was this paid? (optional)'));
+            add('Waive', 'btn-secondary', () => applyStatus('waived', 'Reason for waiving? (optional)'));
+            add('Cancel Invoice', 'btn-danger', () => applyStatus('canceled', 'Reason for canceling? (optional)'));
+        } else {
+            // Terminal state — offer a single "Reopen" escape hatch so a
+            // mistaken Cancel/Waive isn't a permanent decision.
+            add('Reopen (Pending)', 'btn-secondary', () => applyStatus('pending', null));
+        }
+    } else if (kind === 'estimate') {
+        if (status !== 'converted') {
+            add('Convert to Invoice', 'btn-primary', () => convertEstimate(doc));
+        }
+    }
+}
+
+async function applyStatus(status, notePrompt) {
+    if (!selectedInvoiceId) return;
+    let note = null;
+    if (notePrompt) {
+        // eslint-disable-next-line no-alert
+        const entered = prompt(notePrompt);
+        if (entered === null) return; // user cancelled the prompt
+        note = entered.trim() || null;
+    }
+    setStatus('Updating…');
+    try {
+        const updated = await core.invoke('set_invoice_status', {
+            id: selectedInvoiceId,
+            status,
+            note,
+        });
+        const index = invoices.findIndex((doc) => doc.id === updated.id);
+        if (index !== -1) invoices[index] = updated;
+        renderDetail(updated);
+        renderInvoiceList();
+        renderPayoutsLists();
+        setStatus('Updated.');
+    } catch (err) {
+        setStatus(`Couldn't update: ${err}`);
+    }
+}
+
+async function convertEstimate(estimate) {
+    if (!selectedInvoiceId) return;
+    if (!stripeConnected) {
+        setStatus('Connect a Stripe account before converting an estimate — the resulting invoice needs a payout destination.');
+        await openPayoutsView();
+        return;
+    }
+    // eslint-disable-next-line no-alert
+    const dueRaw = prompt('Optional due date for the new invoice (YYYY-MM-DD):');
+    if (dueRaw === null) return;
+    const dueDate = dueRaw.trim()
+        ? String(new Date(dueRaw.trim()).getTime())
+        : undefined;
+    setStatus('Converting estimate…');
+    try {
+        const newInvoice = await core.invoke('convert_estimate_to_invoice', {
+            id: selectedInvoiceId,
+            dueDate,
+        });
+        // Reload the whole store so both the (now-Converted) estimate and
+        // the new invoice land in the frontend's in-memory copy.
+        invoices = await core.invoke('load_invoices');
+        renderInvoiceList();
+        renderPayoutsLists();
+        openDetail(newInvoice.id);
+        setStatus('Estimate converted to invoice.');
+    } catch (err) {
+        setStatus(`Couldn't convert: ${err}`);
+    }
+}
+
+async function checkPayment() {
+    if (!selectedInvoiceId) return;
+    setStatus('Checking for payment…');
+    try {
+        const paidNow = await core.invoke('check_payment_status', { id: selectedInvoiceId });
+        if (paidNow) {
+            invoices = await core.invoke('load_invoices');
+            const doc = findInvoice(selectedInvoiceId);
+            if (doc) renderDetail(doc);
+            renderInvoiceList();
+            renderPayoutsLists();
+            setStatus('Payment received!');
+        } else {
+            setStatus('Not paid yet.');
+        }
+    } catch (err) {
+        setStatus(`Couldn't check payment: ${err}`);
     }
 }
 
@@ -288,8 +548,6 @@ function openDetail(id) {
     renderDetail(inv);
     showView('detail');
 }
-
-detailBackBtn.addEventListener('click', () => showView('list'));
 
 copyPayLinkBtn.addEventListener('click', async () => {
     try {
@@ -310,47 +568,6 @@ shareAgainBtn.addEventListener('click', async () => {
         setStatus(`Couldn't share: ${err}`);
     } finally {
         shareAgainBtn.disabled = false;
-    }
-});
-
-markPaidBtn.addEventListener('click', async () => {
-    if (!selectedInvoiceId) return;
-    markPaidBtn.disabled = true;
-    setStatus('Marking as paid…');
-    try {
-        const updated = await core.invoke('mark_invoice_paid', { id: selectedInvoiceId });
-        const index = invoices.findIndex((inv) => inv.id === updated.id);
-        if (index !== -1) invoices[index] = updated;
-        renderDetail(updated);
-        renderInvoiceList();
-        setStatus('Marked as paid.');
-    } catch (err) {
-        setStatus(`Couldn't update: ${err}`);
-    } finally {
-        markPaidBtn.disabled = false;
-    }
-});
-
-checkPaymentBtn.addEventListener('click', async () => {
-    if (!selectedInvoiceId) return;
-    checkPaymentBtn.disabled = true;
-    setStatus('Checking for payment…');
-    try {
-        const paidNow = await core.invoke('check_payment_status', { id: selectedInvoiceId });
-        if (paidNow) {
-            const updated = await core.invoke('load_invoices');
-            invoices = updated;
-            const inv = findInvoice(selectedInvoiceId);
-            if (inv) renderDetail(inv);
-            renderInvoiceList();
-            setStatus('Payment received!');
-        } else {
-            setStatus('Not paid yet.');
-        }
-    } catch (err) {
-        setStatus(`Couldn't check payment: ${err}`);
-    } finally {
-        checkPaymentBtn.disabled = false;
     }
 });
 
@@ -605,21 +822,25 @@ async function renderPayoutStatus() {
         payoutsConnected.hidden = !stripeConnected;
         payoutsPending.hidden = !pending;
         payoutsForm.hidden = stripeConnected || pending;
+        // Publish the connection state to the shared canonical profile so
+        // idothis (and any other sibling app) can gate on it without
+        // running its own Stripe flow. Best-effort — the publish is
+        // idempotent and cheap; a transient failure just retries next time.
+        core.invoke('publish_stripe_connected').catch(() => {});
     } catch (err) {
         setStatus(`Couldn't load payout status: ${err}`);
     }
-    updateStripeCtaVisibility();
     updateInvoiceCreationGate();
 }
 
 async function openPayoutsView() {
     prePayoutsView = currentViewName();
+    renderPayoutsLists();
     await renderPayoutStatus();
     showView('payouts');
 }
 
 payoutsNavBtn.addEventListener('click', openPayoutsView);
-stripeCtaBtn.addEventListener('click', openPayoutsView);
 stripeRequiredConnectBtn.addEventListener('click', openPayoutsView);
 
 // Re-check whenever the app regains focus — the user completes onboarding

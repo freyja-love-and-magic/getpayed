@@ -1,6 +1,6 @@
 name: gelder
 options:
-  bundleIdPrefix: com.freyja.gelder
+  bundleIdPrefix: club.home.getpayed
   deploymentTarget:
     iOS: 15.0
 fileGroups: [../../src]
@@ -10,9 +10,9 @@ configs:
 settingGroups:
   app:
     base:
-      PRODUCT_NAME: Gelder
-      PRODUCT_BUNDLE_IDENTIFIER: com.freyja.gelder
-      DEVELOPMENT_TEAM: RLJ2FY35FD
+      PRODUCT_NAME: GetPayed
+      PRODUCT_BUNDLE_IDENTIFIER: club.home.getpayed
+      DEVELOPMENT_TEAM: PCUFMY9NKZ
 targetTemplates:
   app:
     type: application

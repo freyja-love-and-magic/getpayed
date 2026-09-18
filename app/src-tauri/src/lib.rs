@@ -10,13 +10,21 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::Manager;
 
-const GATEWAY_BDO_URL: &str = "https://allyabase-gateway-12345.netlify.app/bdo/";
-const SAVAGE_URL: &str = "https://allyabase-gateway-12345.netlify.app/savage/";
+// Path-based routing on the dev.8as.world droplet: nginx terminates TLS on
+// 443 and proxies /<service>/ to that service's local port (bdo → 3003,
+// addie → 3005). One hostname, one certificate, everything over real HTTPS
+// — which is also what keeps iOS ATS happy, since the services themselves
+// speak plain HTTP and are not reachable directly from outside.
+const GATEWAY_BDO_URL: &str = "https://dev.8as.world/bdo/";
+// NOTE: nginx has no /savage/ route yet, so publishing works but the share
+// link this produces 404s until that route is added server-side.
+const SAVAGE_URL: &str = "https://dev.8as.world/savage/";
 // eumachia is the only piece of this stack that can render a real,
 // interactive "Pay Now" page — savage strips all JavaScript from whatever
 // it serves, so it can't host a Stripe checkout itself (verified this
 // session while designing eumachia).
-const EUMACHIA_PAY_URL: &str = "https://allyabase-gateway-12345.netlify.app/eumachia/pay/";
+// NOTE: nginx has no /eumachia/ route yet either — pay links 404 until it does.
+const EUMACHIA_PAY_URL: &str = "https://dev.8as.world/eumachia/pay/";
 const BDO_HASH: &str = "gelder-invoice";
 
 // Both BDO and Addie mint their own server-side `uuid`s, distinct from the
@@ -28,7 +36,7 @@ const BDO_HASH: &str = "gelder-invoice";
 // never touches or loses whatever already existed under a previous one.
 // Bump this whenever GATEWAY_BDO_URL/GATEWAY_ADDIE_URL point at a genuinely
 // different deployment (not for e.g. a same-deployment code redeploy).
-const GATEWAY_ENV: &str = "test-12345";
+const GATEWAY_ENV: &str = "dev-8as-world";
 
 fn default_currency() -> String {
     "usd".to_string()
@@ -36,11 +44,61 @@ fn default_currency() -> String {
 
 // ── Data types ───────────────────────────────────────────────────────────────
 
+/// Whether a document is a billable Invoice or a prospective Estimate.
+/// Both share the same struct, differ in the status transitions we allow
+/// and the actions we surface. Estimates can be converted into invoices;
+/// invoices cannot become estimates.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentKind {
+    Invoice,
+    Estimate,
+}
+
+impl Default for DocumentKind {
+    fn default() -> Self { DocumentKind::Invoice }
+}
+
+/// Lifecycle state for an invoice or estimate. The variants naturally
+/// partition by kind:
+///
+/// - Invoice: `Pending` (default) → one of `PaidStripe`, `PaidManual`,
+///   `Waived`, `Canceled`. The Pending → Paid transition is either
+///   automatic (eumachia poll → `PaidStripe`) or manual
+///   (`set_invoice_status` → any of the others). Any terminal state
+///   can be moved back to `Pending` via the same command.
+/// - Estimate: `Active` (default for estimates) → `Converted` when
+///   `convert_estimate_to_invoice` runs and stamps the estimate's
+///   `converted_to_invoice_id`.
+///
+/// "Past due" is deliberately NOT a stored variant — it's derived at
+/// render time from `Pending + due_date < now`, so it can never get
+/// out of sync with the clock.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InvoiceStatus {
+    Pending,
+    PaidStripe,
+    PaidManual,
+    Waived,
+    Canceled,
+    Active,
+    Converted,
+}
+
+impl Default for InvoiceStatus {
+    fn default() -> Self { InvoiceStatus::Pending }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Invoice {
     #[serde(default)]
     pub id: String,
+    /// Invoice by default (so records written before the estimate feature
+    /// existed keep working). Set to `Estimate` for prospective quotes.
+    #[serde(default)]
+    pub kind: DocumentKind,
     pub description: String,
     pub amount_cents: u64,
     #[serde(default = "default_currency")]
@@ -64,6 +122,7 @@ pub struct Invoice {
     pub share_url: Option<String>,
     /// Permanent eumachia URL for PAYING the invoice online — a real,
     /// interactive page, distinct from the static savage view above.
+    /// Estimates leave this None; they aren't payable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pay_url: Option<String>,
     /// Snapshotted from the connected Addie payout identity at creation
@@ -73,10 +132,25 @@ pub struct Invoice {
     /// the merchant.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub creator_addie_pub_key: Option<String>,
+    /// Lifecycle state — see `InvoiceStatus`.
     #[serde(default)]
-    pub paid: bool,
+    pub status: InvoiceStatus,
+    /// Optional user-set due date (unix ms as a string, matching the other
+    /// timestamps). Only invoices use it; drives the derived "past due"
+    /// display state in the UI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub due_date: Option<String>,
+    /// Free-text reason attached to Waived/Canceled/PaidManual (or empty).
+    /// Kept alongside the status transition so the "why" isn't lost.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_note: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paid_at: Option<String>,
+    /// Set on an Estimate when `convert_estimate_to_invoice` runs — points
+    /// at the id of the invoice it spawned. Provides the bidirectional
+    /// link (estimate → invoice); the invoice itself has no back-pointer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub converted_to_invoice_id: Option<String>,
     /// When the invoiced work was actually performed — user-entered at
     /// creation time (defaults to "now" in the UI, but is editable), unlike
     /// `created_at` below which is always exactly when the record was made.
@@ -86,6 +160,33 @@ pub struct Invoice {
     pub work_performed_at: String,
     #[serde(default)]
     pub created_at: String,
+    /// Legacy pre-status field. Old records had `{paid: true}` with no
+    /// `status`; `migrate_legacy_status` upgrades those to `PaidStripe`
+    /// on read. `skip_serializing` means we never write it back — new
+    /// records only have `status`.
+    #[serde(default, rename = "paid", skip_serializing)]
+    pub legacy_paid: bool,
+}
+
+impl Invoice {
+    /// One-shot migration from old `{paid: true/false}` records to the new
+    /// status field. Old paid==true becomes `PaidStripe` (the check-payment
+    /// poll and the manual "Mark Paid" both set paid=true in the old
+    /// schema, so we can't distinguish — Stripe is the more common origin,
+    /// and the "Paid" display stays the same either way). Idempotent:
+    /// records already carrying a non-default status are left alone.
+    fn migrate_legacy_status(&mut self) {
+        if self.legacy_paid && matches!(self.status, InvoiceStatus::Pending) {
+            self.status = InvoiceStatus::PaidStripe;
+        }
+        self.legacy_paid = false;
+    }
+
+    /// Convenience — true for any status that means "no more money coming
+    /// via Stripe": the four terminal invoice states plus estimate states.
+    fn is_terminal(&self) -> bool {
+        !matches!(self.status, InvoiceStatus::Pending)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -108,7 +209,14 @@ fn invoices_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 fn read_invoices(app: &tauri::AppHandle) -> Result<InvoicesStore, String> {
     let path = invoices_path(app)?;
     match fs::read_to_string(&path) {
-        Ok(contents) => serde_json::from_str(&contents).map_err(|e| e.to_string()),
+        Ok(contents) => {
+            let mut store: InvoicesStore =
+                serde_json::from_str(&contents).map_err(|e| e.to_string())?;
+            for inv in &mut store.invoices {
+                inv.migrate_legacy_status();
+            }
+            Ok(store)
+        }
         Err(_) => Ok(InvoicesStore::default()),
     }
 }
@@ -203,7 +311,7 @@ fn load_or_create_bdo_sessionless(app: &tauri::AppHandle, invoice_id: &str) -> R
 // ever gains a stripe_account_id after the user deliberately taps "Connect
 // Stripe Account" — it is never created implicitly.
 
-const GATEWAY_ADDIE_URL: &str = "https://allyabase-gateway-12345.netlify.app/addie/";
+const GATEWAY_ADDIE_URL: &str = "https://dev.8as.world/addie/";
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 struct AddieIdentity {
@@ -397,23 +505,38 @@ fn format_epoch_ms_date(epoch_ms: &str) -> Option<String> {
 /// lives entirely on the other end of that link.
 fn render_invoice_svg(invoice: &Invoice) -> String {
     const WIDTH: u32 = 400;
-    const BG: &str = "#0a001a";
-    const GREEN: &str = "#10b981";
-    const PURPLE: &str = "#a78bfa";
+    // HomeVentory palette applied to the shared/public rendering. Light
+    // ground for a professional invoice look on the web (savage view);
+    // dark accents for the header/amount so they read as brand-owned.
+    const BG: &str = "#F7F9FA";       // glacier white
+    const FG: &str = "#1F2933";       // midnight slate
+    const MUTED: &str = "#6B7280";     // secondary meta
+    const GREEN: &str = "#2E5E4E";     // deep evergreen (CTA / paid badge)
+    const RED: &str = "#ff3131";       // canceled / past-due
+    const AMBER: &str = "#B87E2A";     // waived
+    const BLUE: &str = "#4FA3F7";      // estimate accent
 
     let cx = WIDTH / 2;
     let mut y: u32 = 60;
     let mut body = String::new();
 
+    let header_label = match invoice.kind {
+        DocumentKind::Invoice => "Invoice",
+        DocumentKind::Estimate => "Estimate",
+    };
+    let header_color = match invoice.kind {
+        DocumentKind::Invoice => GREEN,
+        DocumentKind::Estimate => BLUE,
+    };
     body.push_str(&format!(
-        r#"<text x="{cx}" y="{y}" font-family="sans-serif" font-size="24" font-weight="bold" fill="{GREEN}" text-anchor="middle">Invoice</text>
+        r#"<text x="{cx}" y="{y}" font-family="sans-serif" font-size="24" font-weight="bold" fill="{header_color}" text-anchor="middle">{header_label}</text>
 "#
     ));
 
     if let Some(from_name) = invoice.from_name.as_deref().filter(|s| !s.is_empty()) {
         y += 30;
         body.push_str(&format!(
-            r#"<text x="40" y="{y}" font-family="sans-serif" font-size="13" fill="rgba(255,255,255,0.6)">From: {}</text>
+            r#"<text x="40" y="{y}" font-family="sans-serif" font-size="13" fill="{MUTED}">From: {}</text>
 "#,
             escape_xml(from_name),
         ));
@@ -421,7 +544,7 @@ fn render_invoice_svg(invoice: &Invoice) -> String {
     if let Some(to_name) = invoice.to_name.as_deref().filter(|s| !s.is_empty()) {
         y += 22;
         body.push_str(&format!(
-            r#"<text x="40" y="{y}" font-family="sans-serif" font-size="13" fill="rgba(255,255,255,0.6)">To: {}</text>
+            r#"<text x="40" y="{y}" font-family="sans-serif" font-size="13" fill="{MUTED}">To: {}</text>
 "#,
             escape_xml(to_name),
         ));
@@ -429,41 +552,68 @@ fn render_invoice_svg(invoice: &Invoice) -> String {
     if let Some(work_date) = format_epoch_ms_date(&invoice.work_performed_at) {
         y += 22;
         body.push_str(&format!(
-            r#"<text x="40" y="{y}" font-family="sans-serif" font-size="13" fill="rgba(255,255,255,0.6)">Work performed: {}</text>
+            r#"<text x="40" y="{y}" font-family="sans-serif" font-size="13" fill="{MUTED}">Work performed: {}</text>
 "#,
             escape_xml(&work_date),
+        ));
+    }
+    if let Some(due) = invoice.due_date.as_deref().and_then(format_epoch_ms_date) {
+        y += 22;
+        body.push_str(&format!(
+            r#"<text x="40" y="{y}" font-family="sans-serif" font-size="13" fill="{MUTED}">Due: {}</text>
+"#,
+            escape_xml(&due),
         ));
     }
 
     y += 50;
     body.push_str(&format!(
-        r#"<text x="{cx}" y="{y}" font-family="sans-serif" font-size="34" font-weight="bold" fill="{PURPLE}" text-anchor="middle">{}</text>
+        r#"<text x="{cx}" y="{y}" font-family="sans-serif" font-size="34" font-weight="bold" fill="{FG}" text-anchor="middle">{}</text>
 "#,
         escape_xml(&format_amount(invoice.amount_cents, &invoice.currency)),
     ));
 
     y += 40;
     body.push_str(&format!(
-        r#"<text x="40" y="{y}" font-family="sans-serif" font-size="15" fill="rgba(255,255,255,0.9)">{}</text>
+        r#"<text x="40" y="{y}" font-family="sans-serif" font-size="15" fill="{FG}">{}</text>
 "#,
         escape_xml(&invoice.description),
     ));
 
     y += 50;
-    if invoice.paid {
+    // Status band — one row that reflects the current lifecycle state.
+    // Pending invoices get the interactive Pay Online button; everything
+    // else is a badge stamp (no interactivity on savage anyway, JS is
+    // stripped from published SVGs — see the module top-of-file note).
+    let (badge_text, badge_bg, badge_fg): (Option<&str>, &str, &str) = match invoice.status {
+        InvoiceStatus::PaidStripe => (Some("✅ Paid"), "rgba(46,94,78,0.12)", GREEN),
+        InvoiceStatus::PaidManual => (Some("✅ Paid (marked manually)"), "rgba(46,94,78,0.12)", GREEN),
+        InvoiceStatus::Waived => (Some("Waived"), "rgba(184,126,42,0.15)", AMBER),
+        InvoiceStatus::Canceled => (Some("Canceled"), "rgba(255,49,49,0.10)", RED),
+        InvoiceStatus::Converted => (Some("Converted to Invoice"), "rgba(107,114,128,0.15)", MUTED),
+        InvoiceStatus::Active => (Some("Estimate"), "rgba(79,163,247,0.12)", BLUE),
+        InvoiceStatus::Pending => (None, "", ""),
+    };
+    if let Some(text) = badge_text {
         body.push_str(&format!(
-            r#"<rect x="40" y="{}" width="{}" height="48" rx="12" fill="rgba(16,185,129,0.15)" stroke="{GREEN}" stroke-width="1"/>
-<text x="{cx}" y="{}" font-family="sans-serif" font-size="15" font-weight="bold" fill="{GREEN}" text-anchor="middle">✅ Paid</text>
+            r#"<rect x="40" y="{}" width="{}" height="48" rx="12" fill="{}" stroke="{}" stroke-width="1"/>
+<text x="{cx}" y="{}" font-family="sans-serif" font-size="15" font-weight="bold" fill="{}" text-anchor="middle">{}</text>
 "#,
             y,
             WIDTH - 80,
+            badge_bg,
+            badge_fg,
             y + 30,
+            badge_fg,
+            escape_xml(text),
         ));
         y += 48;
     } else if let Some(pay_url) = invoice.pay_url.as_deref() {
+        // r##"..."## — the inline `fill="#FFFFFF"` contains the sequence
+        // `"#` which would otherwise close a plain r#"..."# raw string.
         body.push_str(&format!(
-            r#"<a href="{}"><rect x="40" y="{}" width="{}" height="48" rx="12" fill="{GREEN}"/><text x="{cx}" y="{}" font-family="sans-serif" font-size="15" font-weight="bold" fill="{BG}" text-anchor="middle">Pay Online</text></a>
-"#,
+            r##"<a href="{}"><rect x="40" y="{}" width="{}" height="48" rx="12" fill="{GREEN}"/><text x="{cx}" y="{}" font-family="sans-serif" font-size="15" font-weight="bold" fill="#FFFFFF" text-anchor="middle">Pay Online</text></a>
+"##,
             escape_xml(pay_url),
             y,
             WIDTH - 80,
@@ -474,7 +624,7 @@ fn render_invoice_svg(invoice: &Invoice) -> String {
 
     y += 30;
     body.push_str(&format!(
-        r#"<text x="{cx}" y="{y}" font-family="sans-serif" font-size="11" fill="rgba(255,255,255,0.4)" text-anchor="middle">a Freyja offering</text>
+        r#"<text x="{cx}" y="{y}" font-family="sans-serif" font-size="11" fill="{MUTED}" text-anchor="middle">a HomeVentory offering</text>
 "#
     ));
 
@@ -504,26 +654,39 @@ async fn load_invoices(app: tauri::AppHandle) -> Result<Vec<Invoice>, String> {
 #[tauri::command]
 async fn create_invoice(
     app: tauri::AppHandle,
+    kind: Option<DocumentKind>,
     description: String,
     amount_cents: u64,
     to_name: Option<String>,
     from_name: Option<String>,
     work_performed_at: String,
+    due_date: Option<String>,
 ) -> Result<Invoice, String> {
     let id = new_id();
+    let kind = kind.unwrap_or(DocumentKind::Invoice);
     // Only snapshot a payout pubkey if Stripe is actually connected — a bare
     // (uninitialized) identity shouldn't make an invoice look split-eligible.
+    // Estimates carry a payout pubkey too so that if/when they're converted,
+    // the resulting invoice can charge — but the pubkey is only consulted
+    // during actual payment, so having it on an estimate is harmless.
     let creator_addie_pub_key = read_addie_identity(&app)
         .filter(|identity| identity.stripe_account_id.is_some())
         .map(|identity| identity.pub_key_hex);
+    let initial_status = match kind {
+        DocumentKind::Invoice => InvoiceStatus::Pending,
+        DocumentKind::Estimate => InvoiceStatus::Active,
+    };
     let mut invoice = Invoice {
         id: id.clone(),
+        kind,
         description,
         amount_cents,
         currency: default_currency(),
         from_name,
         to_name,
         creator_addie_pub_key,
+        status: initial_status,
+        due_date,
         work_performed_at,
         created_at: unix_now_ms_string(),
         ..Default::default()
@@ -554,7 +717,12 @@ async fn create_invoice(
 
     invoice.bdo_uuid_by_env.insert(GATEWAY_ENV.to_string(), uuid.clone());
     invoice.share_url = Some(share_url);
-    invoice.pay_url = Some(pay_url);
+    // Estimates are not payable — the eumachia pay page assumes an invoice
+    // with a payable amount and produces a Stripe checkout, which doesn't
+    // apply to a quote. Only stamp pay_url for actual invoices.
+    if matches!(invoice.kind, DocumentKind::Invoice) {
+        invoice.pay_url = Some(pay_url);
+    }
 
     let svg = render_invoice_svg(&invoice);
     let mut full_json = serde_json::to_value(&invoice).map_err(|e| e.to_string())?;
@@ -606,8 +774,22 @@ async fn republish_invoice(app: &tauri::AppHandle, invoice: &Invoice) -> Result<
     Ok(())
 }
 
+/// Sets an invoice's lifecycle status — the single write path behind every
+/// state-change action in the UI (Mark Paid Manually, Waive, Cancel,
+/// Reopen). `note` is stored on the invoice for any status other than
+/// Pending, so the reason for a Waive/Cancel isn't lost.
+///
+/// Estimate statuses (`Active`/`Converted`) are also permitted here for
+/// completeness, but the normal path for going Active → Converted is
+/// `convert_estimate_to_invoice` (which additionally mints the new
+/// invoice and stamps the link).
 #[tauri::command]
-async fn mark_invoice_paid(app: tauri::AppHandle, id: String) -> Result<Invoice, String> {
+async fn set_invoice_status(
+    app: tauri::AppHandle,
+    id: String,
+    status: InvoiceStatus,
+    note: Option<String>,
+) -> Result<Invoice, String> {
     let mut store = read_invoices(&app)?;
     let index = store
         .invoices
@@ -615,13 +797,92 @@ async fn mark_invoice_paid(app: tauri::AppHandle, id: String) -> Result<Invoice,
         .position(|i| i.id == id)
         .ok_or_else(|| "Invoice not found".to_string())?;
 
-    store.invoices[index].paid = true;
-    store.invoices[index].paid_at = Some(unix_now_ms_string());
+    store.invoices[index].status = status;
+    store.invoices[index].status_note = note.filter(|s| !s.is_empty());
+    // paid_at reflects "when did money actually arrive" — stamped for both
+    // Stripe and manual paid transitions, cleared if the invoice is
+    // reopened (Pending) so a later "paid" transition gets a fresh
+    // timestamp rather than a stale one.
+    match status {
+        InvoiceStatus::PaidStripe | InvoiceStatus::PaidManual => {
+            if store.invoices[index].paid_at.is_none() {
+                store.invoices[index].paid_at = Some(unix_now_ms_string());
+            }
+        }
+        InvoiceStatus::Pending => {
+            store.invoices[index].paid_at = None;
+        }
+        _ => {}
+    }
     let updated = store.invoices[index].clone();
 
-    republish_invoice(&app, &updated).await?;
+    // Only republish if there's a BDO record under the current env — the
+    // migration case of legacy invoices published under other envs simply
+    // updates local state, same policy as republish_invoice itself.
+    if updated.bdo_uuid_by_env.contains_key(GATEWAY_ENV) {
+        republish_invoice(&app, &updated).await?;
+    }
     write_invoices(&app, &store)?;
     Ok(updated)
+}
+
+/// Spawns a fresh Invoice from an existing Estimate — same fields
+/// (description, amount, from/to, work date), fresh id + BDO record + pay
+/// URL, and stamps `converted_to_invoice_id` on the estimate so the two
+/// stay linked. Optional `due_date` because the estimate itself doesn't
+/// carry one (its date semantics are "when the work would happen", not
+/// "when payment is due").
+#[tauri::command]
+async fn convert_estimate_to_invoice(
+    app: tauri::AppHandle,
+    id: String,
+    due_date: Option<String>,
+) -> Result<Invoice, String> {
+    // Snapshot the estimate first, without holding a mutable borrow across
+    // the create_invoice await — that's the standard "clone the read side,
+    // do the async work, then re-open to write the mark-converted" dance.
+    let estimate = {
+        let store = read_invoices(&app)?;
+        store
+            .invoices
+            .iter()
+            .find(|i| i.id == id)
+            .cloned()
+            .ok_or_else(|| "Estimate not found".to_string())?
+    };
+    if !matches!(estimate.kind, DocumentKind::Estimate) {
+        return Err("Only estimates can be converted to invoices.".to_string());
+    }
+    if matches!(estimate.status, InvoiceStatus::Converted) {
+        return Err("This estimate has already been converted.".to_string());
+    }
+
+    let new_invoice = create_invoice(
+        app.clone(),
+        Some(DocumentKind::Invoice),
+        estimate.description.clone(),
+        estimate.amount_cents,
+        estimate.to_name.clone(),
+        estimate.from_name.clone(),
+        estimate.work_performed_at.clone(),
+        due_date,
+    )
+    .await?;
+
+    // Now re-open the store and stamp the estimate as converted. Doing this
+    // AFTER the invoice creation succeeds means a failed conversion doesn't
+    // leave a dangling "converted" estimate pointing at nothing.
+    let mut store = read_invoices(&app)?;
+    if let Some(est) = store.invoices.iter_mut().find(|i| i.id == id) {
+        est.status = InvoiceStatus::Converted;
+        est.converted_to_invoice_id = Some(new_invoice.id.clone());
+        let updated_estimate = est.clone();
+        if updated_estimate.bdo_uuid_by_env.contains_key(GATEWAY_ENV) {
+            republish_invoice(&app, &updated_estimate).await?;
+        }
+    }
+    write_invoices(&app, &store)?;
+    Ok(new_invoice)
 }
 
 /// Polls eumachia's payment-status endpoint for a single invoice. Returns
@@ -637,7 +898,10 @@ async fn check_payment_status(app: tauri::AppHandle, id: String) -> Result<bool,
         .position(|i| i.id == id)
         .ok_or_else(|| "Invoice not found".to_string())?;
 
-    if store.invoices[index].paid {
+    // Only Pending invoices are worth polling. Anything else (already-paid,
+    // waived, canceled, or an estimate) is a no-op — a paid check on a
+    // converted estimate would just be wasted network.
+    if !matches!(store.invoices[index].status, InvoiceStatus::Pending) {
         return Ok(false);
     }
     let uuid = store.invoices[index]
@@ -668,7 +932,7 @@ async fn check_payment_status(app: tauri::AppHandle, id: String) -> Result<bool,
         return Ok(false);
     }
 
-    store.invoices[index].paid = true;
+    store.invoices[index].status = InvoiceStatus::PaidStripe;
     store.invoices[index].paid_at = Some(unix_now_ms_string());
     let updated = store.invoices[index].clone();
     republish_invoice(&app, &updated).await?;
@@ -718,6 +982,18 @@ pub struct CanonicalProfile {
     pub fields: Vec<CanonicalField>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub address: Option<Address>,
+    /// idothis-owned. Present here so getpayed round-trips it. None = don't touch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idothis_categories: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_zip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idothis_rate_cents: Option<u64>,
+    /// getpayed writes this to true after a successful Stripe connect;
+    /// idothis reads it to gate the "Join" action. None = "hasn't been
+    /// touched yet", not the same as false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stripe_connected: Option<bool>,
     pub updated_at: Option<String>,
 }
 
@@ -750,10 +1026,19 @@ async fn load_canonical_profile(app: tauri::AppHandle) -> Result<Option<Canonica
 
 #[tauri::command]
 async fn save_canonical_profile(app: tauri::AppHandle, mut profile: CanonicalProfile) -> Result<CanonicalProfile, String> {
-    // This app's own form never sends a real address (no UI for it — see
-    // Address's doc comment above), so always carry forward whatever's
-    // already stored rather than overwriting it with the incoming None.
-    profile.address = load_canonical_profile(app.clone()).await?.and_then(|p| p.address);
+    // This app's own form never sends real values for address or the
+    // idothis-owned fields, so always carry forward whatever's already
+    // stored rather than overwriting them with the incoming None. Same
+    // for stripe_connected UNLESS the caller is publishing a change (the
+    // new set_stripe_connected command does that below).
+    let existing = load_canonical_profile(app.clone()).await?;
+    if let Some(existing) = existing {
+        if profile.address.is_none() { profile.address = existing.address; }
+        if profile.idothis_categories.is_none() { profile.idothis_categories = existing.idothis_categories; }
+        if profile.service_zip.is_none() { profile.service_zip = existing.service_zip; }
+        if profile.idothis_rate_cents.is_none() { profile.idothis_rate_cents = existing.idothis_rate_cents; }
+        if profile.stripe_connected.is_none() { profile.stripe_connected = existing.stripe_connected; }
+    }
 
     let mut deduped: Vec<CanonicalField> = Vec::new();
     for mut field in profile.fields.into_iter() {
@@ -774,6 +1059,24 @@ async fn save_canonical_profile(app: tauri::AppHandle, mut profile: CanonicalPro
     Ok(profile)
 }
 
+/// Publishes the current local Stripe-connection state to the shared
+/// canonical profile so sibling apps (idothis in particular) can gate on
+/// it without having to run their own onboarding flow. Called on
+/// getpayed startup and after a successful Stripe connect. Reads
+/// `stripeAccountId` presence as the source of truth.
+#[tauri::command]
+async fn publish_stripe_connected(app: tauri::AppHandle) -> Result<(), String> {
+    let connected = read_addie_identity(&app)
+        .map(|i| i.stripe_account_id.is_some())
+        .unwrap_or(false);
+    let mut profile = load_canonical_profile(app.clone()).await?.unwrap_or_default();
+    profile.stripe_connected = Some(connected);
+    profile.updated_at = Some(unix_now_ms_string());
+    let json = serde_json::to_string(&profile).map_err(|e| e.to_string())?;
+    tauri_plugin_app_group::write_value_sync(&app, "canonical.profile", &json)?;
+    Ok(())
+}
+
 // ── App entry ────────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -788,12 +1091,14 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             load_invoices,
             create_invoice,
-            mark_invoice_paid,
+            set_invoice_status,
+            convert_estimate_to_invoice,
             check_payment_status,
             get_payout_status,
             connect_stripe_account,
             load_canonical_profile,
-            save_canonical_profile
+            save_canonical_profile,
+            publish_stripe_connected
         ])
         .run(tauri::generate_context!())
         .expect("error while running gelder");

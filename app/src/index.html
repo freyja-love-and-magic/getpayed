@@ -8,11 +8,13 @@
 </head>
 <body>
     <main id="app">
-        <button type="button" class="stripe-cta-btn" id="stripe-cta-btn" hidden>Connect Stripe Account</button>
-        <button type="button" class="profile-nav-btn" id="profile-nav-btn">Profile</button>
-        <button type="button" class="payouts-nav-btn" id="payouts-nav-btn">Payouts</button>
+        <header class="app-header">
+            <button type="button" class="back-nav-btn" id="back-nav-btn" hidden>◀ Back</button>
+            <button type="button" class="payouts-nav-btn" id="payouts-nav-btn">Payouts</button>
+            <button type="button" class="profile-nav-btn" id="profile-nav-btn">Profile</button>
+        </header>
 
-        <!-- Invoice list view -->
+        <!-- Invoice list view (invoices only; estimates live in Payouts) -->
         <section id="list-view" class="view" hidden>
             <header class="view-header">
                 <h1>Invoices</h1>
@@ -30,14 +32,22 @@
             <p class="hint" id="empty-hint" hidden>No invoices yet — create one to get started.</p>
         </section>
 
-        <!-- Create view -->
+        <!-- Create view — same form for both Invoice and Estimate, toggle
+             at the top switches between them. Estimates skip the Stripe
+             connection gate (nothing gets charged) and expose the due
+             date only for invoices. -->
         <section id="create-view" class="view" hidden>
             <header class="view-header">
-                <h1>New Invoice</h1>
-                <p class="subtitle">Sharing this invoice is what saves and publishes it.</p>
+                <h1 id="create-title">New Invoice</h1>
+                <p class="subtitle" id="create-subtitle">Sharing this is what saves and publishes it.</p>
             </header>
 
             <form id="invoice-form">
+                <div class="kind-toggle" role="tablist" aria-label="Document type">
+                    <button type="button" class="kind-toggle-btn active" data-kind="invoice" id="kind-invoice-btn" role="tab" aria-selected="true">Invoice</button>
+                    <button type="button" class="kind-toggle-btn" data-kind="estimate" id="kind-estimate-btn" role="tab" aria-selected="false">Estimate</button>
+                </div>
+
                 <p class="from-note" id="from-note"></p>
 
                 <label>Bill To
@@ -52,6 +62,9 @@
                 <label>Work Performed
                     <input type="datetime-local" id="field-work-date" required>
                 </label>
+                <label id="due-date-label">Due Date (optional)
+                    <input type="date" id="field-due-date">
+                </label>
 
                 <div class="form-actions">
                     <button type="submit" class="btn btn-primary" id="create-submit-btn">Create & Share</button>
@@ -60,10 +73,12 @@
             </form>
         </section>
 
-        <!-- Detail view -->
+        <!-- Detail view — title, badge, and action buttons are populated
+             dynamically by JS based on the document's kind and current
+             status. The Back button lives in the app header. -->
         <section id="detail-view" class="view" hidden>
             <header class="view-header">
-                <h1>Invoice</h1>
+                <h1 id="detail-title">Invoice</h1>
             </header>
 
             <div class="card invoice-card">
@@ -72,9 +87,12 @@
                 <p class="invoice-meta" id="detail-from" hidden></p>
                 <p class="invoice-meta" id="detail-to" hidden></p>
                 <p class="invoice-meta" id="detail-work-date" hidden></p>
+                <p class="invoice-meta" id="detail-due-date" hidden></p>
                 <p class="invoice-meta invoice-meta-faint" id="detail-created-at" hidden></p>
 
-                <div class="paid-badge" id="paid-badge" hidden>✅ Paid</div>
+                <div class="status-badge" id="detail-status-badge" hidden></div>
+                <p class="invoice-meta" id="detail-status-note" hidden></p>
+                <p class="invoice-meta" id="detail-converted-link" hidden></p>
 
                 <div class="link-row" id="pay-link-row" hidden>
                     <span class="link-text" id="pay-link-text"></span>
@@ -82,47 +100,69 @@
                 </div>
 
                 <button type="button" class="btn btn-primary" id="share-again-btn">Share Again</button>
-                <button type="button" class="btn btn-secondary" id="check-payment-btn">Check Payment</button>
-                <button type="button" class="btn btn-secondary" id="mark-paid-btn">Mark as Paid</button>
-                <button type="button" class="btn btn-secondary" id="detail-back-btn">Back</button>
+                <div class="detail-actions" id="detail-actions"></div>
             </div>
         </section>
 
-        <!-- Payouts view — connects a real Stripe payout destination.
-             Gelder-specific (not shared via the App Group like Profile),
-             since it's a real Stripe ToS-acceptance action, not profile
-             data. Explicit opt-in only: nothing here happens automatically. -->
+        <!-- Payouts view — a financial hub. Shows the full set of both
+             estimates and invoices at the top, then the Stripe payout
+             onboarding section. Gelder-specific (not shared via the App
+             Group like Profile), since Stripe ToS acceptance is a real
+             action, not profile data. Explicit opt-in only: nothing here
+             happens automatically. -->
         <section id="payouts-view" class="view" hidden>
             <header class="view-header">
                 <h1>Payouts</h1>
-                <p class="subtitle">Invoice payments are made through Stripe, so a connected Stripe account is required before you can create invoices — it's where disbursements actually go. Connecting also sets up automatic payouts: you'll receive 91% of every paid invoice, with the platform keeping 9% minus processing fees.</p>
+                <p class="subtitle">Everything with an amount attached — estimates you've sent, invoices you're waiting on, and where the money lands.</p>
             </header>
 
-            <div id="payouts-connected" hidden>
-                <div class="paid-badge">✅ Stripe account connected</div>
-                <p class="hint">New invoices you create will now request a 91% split to this account.</p>
-            </div>
-
-            <div id="payouts-pending" hidden>
-                <p class="hint">Finish connecting in the browser that just opened, then come back here.</p>
-                <button type="button" class="btn btn-secondary" id="payouts-reopen-btn">Reopen Onboarding</button>
-                <button type="button" class="btn btn-primary" id="payouts-done-btn">I've Finished Onboarding</button>
-            </div>
-
-            <form id="payouts-form">
-                <label>Country
-                    <input type="text" id="payouts-country" placeholder="US" maxlength="2" style="text-transform: uppercase;" required>
-                </label>
-                <label>Email
-                    <input type="email" id="payouts-email" placeholder="you@example.com" required>
-                </label>
-                <p class="hint">Connecting opens Stripe's own onboarding page in your browser, where you'll enter your legal name and remaining details directly with Stripe.</p>
-
-                <div class="form-actions">
-                    <button type="submit" class="btn btn-primary" id="payouts-connect-btn">Connect Stripe Account</button>
-                    <button type="button" class="btn btn-secondary" id="payouts-close-btn">Close</button>
+            <section class="payouts-docs-section">
+                <div class="payouts-section-header">
+                    <p class="section-label">Estimates</p>
+                    <button type="button" class="btn btn-secondary btn-inline-add" id="new-estimate-btn">+ New</button>
                 </div>
-            </form>
+                <ul class="invoice-list" id="estimates-list"></ul>
+                <p class="hint" id="estimates-empty-hint" hidden>No estimates yet.</p>
+            </section>
+
+            <section class="payouts-docs-section">
+                <div class="payouts-section-header">
+                    <p class="section-label">Invoices</p>
+                </div>
+                <ul class="invoice-list" id="payouts-invoices-list"></ul>
+                <p class="hint" id="payouts-invoices-empty-hint" hidden>No invoices yet.</p>
+            </section>
+
+            <section class="payouts-stripe-section">
+                <p class="section-label">Payout destination</p>
+                <p class="hint">Invoice payments are made through Stripe, so a connected Stripe account is required before you can create invoices. Connecting sets up automatic payouts — you'll receive 91% of every paid invoice, with the platform keeping 9% minus processing fees.</p>
+
+                <div id="payouts-connected" hidden>
+                    <div class="status-badge status-paid">✅ Stripe account connected</div>
+                    <p class="hint">New invoices you create will now request a 91% split to this account.</p>
+                </div>
+
+                <div id="payouts-pending" hidden>
+                    <p class="hint">Finish connecting in the browser that just opened, then come back here.</p>
+                    <button type="button" class="btn btn-secondary" id="payouts-reopen-btn">Reopen Onboarding</button>
+                    <button type="button" class="btn btn-primary" id="payouts-done-btn">I've Finished Onboarding</button>
+                </div>
+
+                <form id="payouts-form">
+                    <label>Country
+                        <input type="text" id="payouts-country" placeholder="US" maxlength="2" style="text-transform: uppercase;" required>
+                    </label>
+                    <label>Email
+                        <input type="email" id="payouts-email" placeholder="you@example.com" required>
+                    </label>
+                    <p class="hint">Connecting opens Stripe's own onboarding page in your browser, where you'll enter your legal name and remaining details directly with Stripe.</p>
+
+                    <div class="form-actions">
+                        <button type="submit" class="btn btn-primary" id="payouts-connect-btn">Connect Stripe Account</button>
+                        <button type="button" class="btn btn-secondary" id="payouts-close-btn">Close</button>
+                    </div>
+                </form>
+            </section>
         </section>
 
         <!-- Canonical profile view — a separate, App-Group-shared record; not

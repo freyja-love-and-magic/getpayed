@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Gelder",
+  "productName": "GetPayed",
   "version": "0.1.0",
-  "identifier": "com.freyja.gelder",
+  "identifier": "club.home.getpayed",
   "build": {
     "frontendDist": "../src"
   },
@@ -10,14 +10,14 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Gelder",
+        "title": "GetPayed",
         "width": 390,
         "height": 844,
         "resizable": true,
         "fullscreen": false,
         "decorations": true,
         "transparent": false,
-        "backgroundColor": "#0a001a"
+        "backgroundColor": "#F7F9FA"
       }
     ],
     "security": {
@@ -42,7 +42,7 @@
     ],
     "iOS": {
       "minimumSystemVersion": "15.0",
-      "developmentTeam": "RLJ2FY35FD"
+      "developmentTeam": "PCUFMY9NKZ"
     }
   }
 }
