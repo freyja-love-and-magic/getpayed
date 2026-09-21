@@ -1,3 +1,4 @@
+use addie_rs::structs::StripeAccountStatus;
 use addie_rs::Addie;
 use bdo_rs::BDO;
 use serde::{Deserialize, Serialize};
@@ -29,7 +30,7 @@ const BDO_HASH: &str = "gelder-invoice";
 
 // Both BDO and Addie mint their own server-side `uuid`s, distinct from the
 // local keypair used to sign requests — a uuid minted against one gateway
-// 404s on another (see connect_stripe_account's and republish_invoice's
+// 404s on another (see start_stripe_onboarding's and republish_invoice's
 // comments for how that actually surfaced). Everything that caches one of
 // those uuids (the Addie identity, an invoice's BDO record) keys its storage
 // by this const instead of overwriting a single value, so switching envs
@@ -305,11 +306,9 @@ fn load_or_create_bdo_sessionless(app: &tauri::AppHandle, invoice_id: &str) -> R
 // ── Addie payout identity ────────────────────────────────────────────────────
 //
 // Unlike the per-invoice BDO keys above, this is a single, app-wide identity
-// — it represents "who gets paid," not a per-record publish key. Connecting
-// Stripe is an explicit, opt-in action (it accepts Stripe's ToS on the
-// user's behalf via Addie's own tos_acceptance block), so this file only
-// ever gains a stripe_account_id after the user deliberately taps "Connect
-// Stripe Account" — it is never created implicitly.
+// — it represents "who gets paid," not a per-record publish key. It only
+// gains a stripe_account_id after the user deliberately taps "Set Up
+// Payouts" — never implicitly.
 
 const GATEWAY_ADDIE_URL: &str = "https://dev.8as.world/addie/";
 
@@ -321,6 +320,11 @@ struct AddieIdentity {
     addie_uuid: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stripe_account_id: Option<String>,
+    /// Last status Stripe reported for that account (via Addie). Cached so
+    /// the invoice gate and the Payouts view work offline and at launch; the
+    /// Payouts view refreshes it from the server whenever it's shown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stripe_status: Option<StripeAccountStatus>,
 }
 
 fn addie_identity_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -372,6 +376,7 @@ fn load_or_create_addie_sessionless(app: &tauri::AppHandle) -> Result<(Addie, Ad
         pub_key_hex: sessionless.public_key().to_hex(),
         addie_uuid: None,
         stripe_account_id: None,
+        stripe_status: None,
     };
     write_addie_identity(app, &identity)?;
     Ok((Addie::new(Some(GATEWAY_ADDIE_URL.to_string()), Some(sessionless)), identity))
@@ -380,55 +385,85 @@ fn load_or_create_addie_sessionless(app: &tauri::AppHandle) -> Result<(Addie, Ad
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct PayoutStatus {
+    /// Ready to be paid out: onboarding submitted AND Stripe has activated
+    /// the transfers capability eumachia pays creators through. This is what
+    /// gates invoice creation and what sibling apps see as stripe_connected.
     pub connected: bool,
+    /// A Stripe account exists for this identity (onboarding may be unfinished).
+    pub has_account: bool,
+    pub details_submitted: bool,
+    /// Requirements Stripe still needs from the user (currently + past due).
+    pub requirements_due: u32,
+    /// Submitted details Stripe is still verifying.
+    pub pending_verification: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pub_key: Option<String>,
 }
 
-#[tauri::command]
-async fn get_payout_status(app: tauri::AppHandle) -> Result<PayoutStatus, String> {
-    match read_addie_identity(&app) {
-        Some(identity) => Ok(PayoutStatus {
-            connected: identity.stripe_account_id.is_some(),
-            pub_key: Some(identity.pub_key_hex),
-        }),
-        None => Ok(PayoutStatus::default()),
+fn is_payout_ready(status: &StripeAccountStatus) -> bool {
+    status.details_submitted && status.transfers_active
+}
+
+fn payout_status_from(identity: &AddieIdentity) -> PayoutStatus {
+    let status = identity.stripe_status.clone().unwrap_or_default();
+    PayoutStatus {
+        connected: is_payout_ready(&status),
+        has_account: identity.stripe_account_id.is_some() || status.has_account,
+        details_submitted: status.details_submitted,
+        requirements_due: status.currently_due + status.past_due,
+        pending_verification: status.pending_verification,
+        disabled_reason: status.disabled_reason.clone(),
+        pub_key: Some(identity.pub_key_hex.clone()),
     }
 }
 
-// Stripe requires an absolute URL here; a custom scheme is accepted. Once
-// the hosted onboarding flow finishes (or is abandoned without submitting),
-// Stripe navigates Safari to this URL, which iOS hands off to Gelder via
-// the `gelder` custom scheme registered in tauri.conf.json — the frontend's
-// deep-link listener then clears the onboarding-pending flag and re-checks
-// status (see the visibilitychange handler for the desktop/manual-switch
-// fallback path).
-const STRIPE_ONBOARDING_RETURN_URL: &str = "gelder://stripe-return";
-
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct StripeConnectResult {
-    /// Absent only when Addie found an already-connected account for this
-    /// email and skipped onboarding entirely (`already_connected: true`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub onboarding_url: Option<String>,
-    pub already_connected: bool,
+/// Cached status — instant, works offline. See `refresh_payout_status`.
+#[tauri::command]
+async fn get_payout_status(app: tauri::AppHandle) -> Result<PayoutStatus, String> {
+    Ok(read_addie_identity(&app)
+        .map(|identity| payout_status_from(&identity))
+        .unwrap_or_default())
 }
 
-/// The one deliberate, explicit action that starts connecting a real Stripe
-/// payout destination — creates the Addie identity on first use, then
-/// requests a Stripe **Express** account for it (not the plain/company
-/// endpoint, which is for platform revenue splits and never produces a
-/// hosted onboarding page). The account isn't actually payable yet at this
-/// point — `stripe_account_id` gets persisted so a retry doesn't create a
-/// duplicate account, but the user still has to complete Stripe's hosted
-/// onboarding (opened in the system browser) before payouts can flow.
+/// Asks Stripe (through Addie) for the account's live status and caches it.
 #[tauri::command]
-async fn connect_stripe_account(
+async fn refresh_payout_status(app: tauri::AppHandle) -> Result<PayoutStatus, String> {
+    let (client, mut identity) = load_or_create_addie_sessionless(&app)?;
+    let Some(uuid) = identity.addie_uuid.clone() else {
+        return Ok(payout_status_from(&identity));
+    };
+
+    let status = client.get_stripe_account_status(&uuid).await.map_err(|e| e.to_string())?;
+    if let Some(account_id) = status.account_id.clone() {
+        identity.stripe_account_id = Some(account_id);
+    }
+    identity.stripe_status = Some(status);
+    write_addie_identity(&app, &identity)?;
+    Ok(payout_status_from(&identity))
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct StripeOnboardingSession {
+    pub publishable_key: String,
+    pub client_secret: String,
+}
+
+/// Returns what the Stripe Connect SDK needs to present in-app onboarding,
+/// and is called again whenever the SDK asks for a fresh client secret.
+///
+/// On first use this creates the Addie identity and, server-side, a Stripe
+/// **Express** account (`country`/`email` are required then and ignored
+/// after). Nothing here accepts Stripe's terms for the user — they do that
+/// themselves inside the onboarding sheet.
+#[tauri::command]
+async fn start_stripe_onboarding(
     app: tauri::AppHandle,
-    country: String,
-    email: String,
-) -> Result<StripeConnectResult, String> {
+    country: Option<String>,
+    email: Option<String>,
+) -> Result<StripeOnboardingSession, String> {
     let (client, mut identity) = load_or_create_addie_sessionless(&app)?;
 
     if identity.addie_uuid.is_none() {
@@ -438,23 +473,19 @@ async fn connect_stripe_account(
     }
     let uuid = identity.addie_uuid.clone().ok_or_else(|| "Addie identity missing uuid".to_string())?;
 
-    let result = client
-        .add_processor_express_account(
-            &uuid,
-            &country,
-            &email,
-            STRIPE_ONBOARDING_RETURN_URL,
-            STRIPE_ONBOARDING_RETURN_URL,
-        )
+    let session = client
+        .create_stripe_account_session(&uuid, country.as_deref(), email.as_deref())
         .await
         .map_err(|e| e.to_string())?;
 
-    identity.stripe_account_id = Some(result.stripe_account_id.clone());
-    write_addie_identity(&app, &identity)?;
+    if identity.stripe_account_id.as_deref() != Some(session.account_id.as_str()) {
+        identity.stripe_account_id = Some(session.account_id.clone());
+        write_addie_identity(&app, &identity)?;
+    }
 
-    Ok(StripeConnectResult {
-        onboarding_url: result.stripe_onboarding_url,
-        already_connected: result.already_connected,
+    Ok(StripeOnboardingSession {
+        publishable_key: session.publishable_key,
+        client_secret: session.client_secret,
     })
 }
 
@@ -1062,12 +1093,13 @@ async fn save_canonical_profile(app: tauri::AppHandle, mut profile: CanonicalPro
 /// Publishes the current local Stripe-connection state to the shared
 /// canonical profile so sibling apps (idothis in particular) can gate on
 /// it without having to run their own onboarding flow. Called on
-/// getpayed startup and after a successful Stripe connect. Reads
-/// `stripeAccountId` presence as the source of truth.
+/// getpayed startup and after onboarding. "Connected" means Stripe says the
+/// account can receive payouts — not merely that one exists.
 #[tauri::command]
 async fn publish_stripe_connected(app: tauri::AppHandle) -> Result<(), String> {
     let connected = read_addie_identity(&app)
-        .map(|i| i.stripe_account_id.is_some())
+        .and_then(|i| i.stripe_status)
+        .map(|status| is_payout_ready(&status))
         .unwrap_or(false);
     let mut profile = load_canonical_profile(app.clone()).await?.unwrap_or_default();
     profile.stripe_connected = Some(connected);
@@ -1084,6 +1116,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_share_sheet::init())
         .plugin(tauri_plugin_app_group::init())
+        .plugin(tauri_plugin_stripe_connect::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
@@ -1095,7 +1128,8 @@ pub fn run() {
             convert_estimate_to_invoice,
             check_payment_status,
             get_payout_status,
-            connect_stripe_account,
+            refresh_payout_status,
+            start_stripe_onboarding,
             load_canonical_profile,
             save_canonical_profile,
             publish_stripe_connected

@@ -106,8 +106,8 @@
 
         <!-- Payouts view — a financial hub. Shows the full set of both
              estimates and invoices at the top, then the Stripe payout
-             onboarding section. Gelder-specific (not shared via the App
-             Group like Profile), since Stripe ToS acceptance is a real
+             onboarding section. GetPayed-specific (not shared via the App
+             Group like Profile), since accepting Stripe's terms is a real
              action, not profile data. Explicit opt-in only: nothing here
              happens automatically. -->
         <section id="payouts-view" class="view" hidden>
@@ -137,15 +137,26 @@
                 <p class="section-label">Payout destination</p>
                 <p class="hint">Invoice payments are made through Stripe, so a connected Stripe account is required before you can create invoices. Connecting sets up automatic payouts — you'll receive 91% of every paid invoice, with the platform keeping 9% minus processing fees.</p>
 
+                <!-- Four states, driven by what Stripe reports about the
+                     account (see renderPayoutStatus): ready to be paid,
+                     Stripe still verifying, details still needed, and
+                     nothing set up yet. -->
                 <div id="payouts-connected" hidden>
-                    <div class="status-badge status-paid">✅ Stripe account connected</div>
+                    <div class="status-badge status-paid">✅ Ready to get paid</div>
                     <p class="hint">New invoices you create will now request a 91% split to this account.</p>
+                    <button type="button" class="btn btn-secondary" id="payouts-manage-btn">Update Payout Details</button>
                 </div>
 
-                <div id="payouts-pending" hidden>
-                    <p class="hint">Finish connecting in the browser that just opened, then come back here.</p>
-                    <button type="button" class="btn btn-secondary" id="payouts-reopen-btn">Reopen Onboarding</button>
-                    <button type="button" class="btn btn-primary" id="payouts-done-btn">I've Finished Onboarding</button>
+                <div id="payouts-verifying" hidden>
+                    <div class="status-badge status-pending">⏳ Stripe is reviewing your details</div>
+                    <p class="hint">Nothing more to do right now. Stripe usually finishes within a few minutes, but it can take longer. You can create invoices as soon as it's done.</p>
+                    <button type="button" class="btn btn-secondary" id="payouts-refresh-btn">Check Again</button>
+                </div>
+
+                <div id="payouts-incomplete" hidden>
+                    <div class="status-badge status-pending">Setup unfinished</div>
+                    <p class="hint" id="payouts-incomplete-hint">Stripe still needs a few details before you can be paid.</p>
+                    <button type="button" class="btn btn-primary" id="payouts-resume-btn">Finish Setup</button>
                 </div>
 
                 <form id="payouts-form">
@@ -155,10 +166,10 @@
                     <label>Email
                         <input type="email" id="payouts-email" placeholder="you@example.com" required>
                     </label>
-                    <p class="hint">Connecting opens Stripe's own onboarding page in your browser, where you'll enter your legal name and remaining details directly with Stripe.</p>
+                    <p class="hint">Stripe's own setup opens right here in the app, where you'll enter your legal name and remaining details directly with Stripe. GetPayed never sees them.</p>
 
                     <div class="form-actions">
-                        <button type="submit" class="btn btn-primary" id="payouts-connect-btn">Connect Stripe Account</button>
+                        <button type="submit" class="btn btn-primary" id="payouts-connect-btn">Set Up Payouts</button>
                         <button type="button" class="btn btn-secondary" id="payouts-close-btn">Close</button>
                     </div>
                 </form>

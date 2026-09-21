@@ -6223,6 +6223,36 @@
           "type": "string",
           "const": "shell:deny-stdin-write",
           "markdownDescription": "Denies the stdin_write command without any pre-configured scope."
+        },
+        {
+          "description": "Allows presenting Stripe Connect embedded onboarding and answering its requests for a fresh account-session client secret.\n#### This default permission set includes:\n\n- `allow-present-onboarding`\n- `allow-provide-client-secret`",
+          "type": "string",
+          "const": "stripe-connect:default",
+          "markdownDescription": "Allows presenting Stripe Connect embedded onboarding and answering its requests for a fresh account-session client secret.\n#### This default permission set includes:\n\n- `allow-present-onboarding`\n- `allow-provide-client-secret`"
+        },
+        {
+          "description": "Enables the present_onboarding command without any pre-configured scope.",
+          "type": "string",
+          "const": "stripe-connect:allow-present-onboarding",
+          "markdownDescription": "Enables the present_onboarding command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the provide_client_secret command without any pre-configured scope.",
+          "type": "string",
+          "const": "stripe-connect:allow-provide-client-secret",
+          "markdownDescription": "Enables the provide_client_secret command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the present_onboarding command without any pre-configured scope.",
+          "type": "string",
+          "const": "stripe-connect:deny-present-onboarding",
+          "markdownDescription": "Denies the present_onboarding command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the provide_client_secret command without any pre-configured scope.",
+          "type": "string",
+          "const": "stripe-connect:deny-provide-client-secret",
+          "markdownDescription": "Denies the provide_client_secret command without any pre-configured scope."
         }
       ]
     },

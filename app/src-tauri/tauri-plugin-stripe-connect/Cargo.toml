@@ -1,0 +1,12 @@
+[package]
+name = "tauri-plugin-stripe-connect"
+version = "0.1.0"
+edition = "2021"
+links = "tauri-plugin-stripe-connect"
+description = "Stripe Connect embedded onboarding (iOS SDK) for Tauri apps"
+
+[dependencies]
+tauri = { version = "2" }
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }

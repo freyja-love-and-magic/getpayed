@@ -1,0 +1,3 @@
+[default]
+description = "Allows presenting Stripe Connect embedded onboarding and answering its requests for a fresh account-session client secret."
+permissions = ["allow-present-onboarding", "allow-provide-client-secret"]

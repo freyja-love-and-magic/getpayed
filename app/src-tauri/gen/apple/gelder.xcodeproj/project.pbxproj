@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		1EAD1C2B3E9708B06B5A17C7 /* StripeConnect in Frameworks */ = {isa = PBXBuildFile; productRef = C4BD8F1C9591582F4F024F61 /* StripeConnect */; };
 		2889C29289F4E62602B49464 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 3667C3C8480C71B7A7F87520 /* Assets.xcassets */; };
 		56F1C4E4BDFEE56BFB15D4FF /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 7A4DD984D7FDAC21DE999AE3 /* PrivacyInfo.xcprivacy */; };
 		60AA9F4F9BCAF0F7DDEDEC1F /* assets in Resources */ = {isa = PBXBuildFile; fileRef = 20BC258E41B678E27443820C /* assets */; };
@@ -20,6 +21,7 @@
 		F3E0C6ADBC96BC0E592DDD58 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BC18039B1DAE48A9F7A32E26 /* CoreGraphics.framework */; };
 		F40F446EB7C7DCEC256AC731 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 13A80F1EA0F32FEEF1C78518 /* Metal.framework */; };
 		F821F09BF637FA9BA7030F32 /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8FD13055EF8FB740CB56C0E4 /* WebKit.framework */; };
+		F8E267DE4E2904CBF0D4507F /* StripeConnectBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB9E0B9E0223756A776FCCA3 /* StripeConnectBridge.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -41,6 +43,7 @@
 		B4499FCF593F650079BD45B7 /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
 		BC18039B1DAE48A9F7A32E26 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
 		CE8925F44EC264479287D634 /* bindings.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bindings.h; sourceTree = "<group>"; };
+		DB9E0B9E0223756A776FCCA3 /* StripeConnectBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StripeConnectBridge.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -56,6 +59,7 @@
 				67376702B1EC03C783AE9971 /* Security.framework in Frameworks */,
 				DDDBD77923FA289B7F2BE865 /* UIKit.framework in Frameworks */,
 				F821F09BF637FA9BA7030F32 /* WebKit.framework in Frameworks */,
+				1EAD1C2B3E9708B06B5A17C7 /* StripeConnect in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -118,6 +122,7 @@
 				20BC258E41B678E27443820C /* assets */,
 				3667C3C8480C71B7A7F87520 /* Assets.xcassets */,
 				801BD2FCF680EAD7FBBF429D /* LaunchScreen.storyboard */,
+				9C4738C26190E02F4F5AE6DD /* app-target */,
 				15E2978AB1E2812B4A23FFB5 /* Externals */,
 				0CCDEC8950E255F4453CDFB0 /* gelder_iOS */,
 				1305B79FA62C236021481815 /* ios-native */,
@@ -126,6 +131,15 @@
 				E4B1788131A6958D0F4B93B3 /* Frameworks */,
 				EB16B313224376939E994E63 /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		9C4738C26190E02F4F5AE6DD /* app-target */ = {
+			isa = PBXGroup;
+			children = (
+				DB9E0B9E0223756A776FCCA3 /* StripeConnectBridge.swift */,
+			);
+			name = "app-target";
+			path = "../../tauri-plugin-stripe-connect/app-target";
 			sourceTree = "<group>";
 		};
 		DAA9D5928E2758281550E01C /* src */ = {
@@ -178,6 +192,7 @@
 			);
 			name = gelder_iOS;
 			packageProductDependencies = (
+				C4BD8F1C9591582F4F024F61 /* StripeConnect */,
 			);
 			productName = gelder_iOS;
 			productReference = 20D5F6ED72F5B27360D1FFCE /* gelder_iOS.app */;
@@ -206,6 +221,9 @@
 			);
 			mainGroup = 8BDBDA423981AB4A0E5457FB;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				A11C83A7B9B9BB01E743109C /* XCRemoteSwiftPackageReference "stripe-ios-spm" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = EB16B313224376939E994E63 /* Products */;
 			projectDirPath = "";
@@ -259,6 +277,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F8E267DE4E2904CBF0D4507F /* StripeConnectBridge.swift in Sources */,
 				6E05C05B1F21D3EA060DF90E /* main.mm in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -471,6 +490,25 @@
 			defaultConfigurationName = debug;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		A11C83A7B9B9BB01E743109C /* XCRemoteSwiftPackageReference "stripe-ios-spm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/stripe/stripe-ios-spm";
+			requirement = {
+				kind = exactVersion;
+				version = 26.11.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		C4BD8F1C9591582F4F024F61 /* StripeConnect */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A11C83A7B9B9BB01E743109C /* XCRemoteSwiftPackageReference "stripe-ios-spm" */;
+			productName = StripeConnect;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 53684AE9A9717FE403D65A16 /* Project object */;
 }

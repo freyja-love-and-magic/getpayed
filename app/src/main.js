@@ -1,4 +1,5 @@
 const { core, dialog, fs } = window.__TAURI__;
+const Channel = window.__TAURI__.core.Channel;
 
 // Keep in sync with MAX_CANONICAL_FIELDS in src-tauri/src/lib.rs.
 const MAX_PROFILE_FIELDS = 20;
@@ -68,9 +69,12 @@ const profileFieldLimitHint = document.getElementById('profile-field-limit-hint'
 const profileCloseBtn = document.getElementById('profile-close-btn');
 
 const payoutsConnected = document.getElementById('payouts-connected');
-const payoutsPending = document.getElementById('payouts-pending');
-const payoutsReopenBtn = document.getElementById('payouts-reopen-btn');
-const payoutsDoneBtn = document.getElementById('payouts-done-btn');
+const payoutsVerifying = document.getElementById('payouts-verifying');
+const payoutsIncomplete = document.getElementById('payouts-incomplete');
+const payoutsIncompleteHint = document.getElementById('payouts-incomplete-hint');
+const payoutsManageBtn = document.getElementById('payouts-manage-btn');
+const payoutsRefreshBtn = document.getElementById('payouts-refresh-btn');
+const payoutsResumeBtn = document.getElementById('payouts-resume-btn');
 const payoutsForm = document.getElementById('payouts-form');
 const payoutsCountry = document.getElementById('payouts-country');
 const payoutsEmail = document.getElementById('payouts-email');
@@ -786,51 +790,60 @@ function currentViewName() {
 
 let prePayoutsView = 'list';
 
-// Addie marks the Express account "connected" the instant it's created, not
-// once the user actually finishes Stripe's hosted onboarding — there's no
-// endpoint yet to check real charges_enabled/payouts_enabled status. So
-// this local flag (persisted across app backgrounding, since onboarding
-// happens in an external browser) takes priority over the backend's
-// technically-premature "connected" signal until the user confirms they're
-// done. It's honest about being a self-report, not a verified fact.
-const STRIPE_ONBOARDING_PENDING_KEY = 'gelder.stripeOnboardingPending';
-const STRIPE_ONBOARDING_URL_KEY = 'gelder.stripeOnboardingUrl';
+// Onboarding runs inside the app via the Stripe Connect iOS SDK
+// (tauri-plugin-stripe-connect), so there's no browser hand-off and no
+// "did you finish?" guesswork: when the sheet closes we ask Stripe what the
+// account's actual state is. `connected` means Stripe activated the
+// transfers capability — the thing eumachia needs to pay the creator —
+// not merely that an account exists.
 
-function isOnboardingPending() {
-    return localStorage.getItem(STRIPE_ONBOARDING_PENDING_KEY) === '1';
+let payoutStatus = { connected: false, hasAccount: false };
+
+function renderPayoutState(status) {
+    payoutStatus = status || { connected: false, hasAccount: false };
+    stripeConnected = !!payoutStatus.connected;
+
+    const ready = stripeConnected;
+    // Details are in and Stripe hasn't asked for anything else — it's
+    // verifying. Distinguished from "unfinished" so we don't nag the user
+    // to go re-enter details that are already submitted and under review.
+    const verifying = !ready && payoutStatus.detailsSubmitted && !payoutStatus.requirementsDue;
+    const incomplete = !ready && !verifying && payoutStatus.hasAccount;
+
+    payoutsConnected.hidden = !ready;
+    payoutsVerifying.hidden = !verifying;
+    payoutsIncomplete.hidden = !incomplete;
+    payoutsForm.hidden = ready || verifying || incomplete;
+
+    if (incomplete) {
+        payoutsIncompleteHint.textContent = payoutStatus.disabledReason
+            ? `Stripe needs more information before you can be paid (${payoutStatus.disabledReason}).`
+            : 'Stripe still needs a few details before you can be paid.';
+    }
+
+    updateInvoiceCreationGate();
 }
 
-function setOnboardingPending(url) {
-    localStorage.setItem(STRIPE_ONBOARDING_PENDING_KEY, '1');
-    localStorage.setItem(STRIPE_ONBOARDING_URL_KEY, url);
-}
-
-function clearOnboardingPending() {
-    localStorage.removeItem(STRIPE_ONBOARDING_PENDING_KEY);
-    localStorage.removeItem(STRIPE_ONBOARDING_URL_KEY);
-}
-
-async function openInBrowser(url) {
-    await core.invoke('plugin:shell|open', { path: url });
-}
-
+// Cached status: instant, works offline, correct at launch.
 async function renderPayoutStatus() {
     try {
-        const status = await core.invoke('get_payout_status');
-        const pending = isOnboardingPending();
-        stripeConnected = !!status.connected && !pending;
-        payoutsConnected.hidden = !stripeConnected;
-        payoutsPending.hidden = !pending;
-        payoutsForm.hidden = stripeConnected || pending;
-        // Publish the connection state to the shared canonical profile so
-        // idothis (and any other sibling app) can gate on it without
-        // running its own Stripe flow. Best-effort — the publish is
-        // idempotent and cheap; a transient failure just retries next time.
-        core.invoke('publish_stripe_connected').catch(() => {});
+        renderPayoutState(await core.invoke('get_payout_status'));
     } catch (err) {
         setStatus(`Couldn't load payout status: ${err}`);
     }
-    updateInvoiceCreationGate();
+    // Best-effort: let sibling apps (idothis) gate on the same fact.
+    core.invoke('publish_stripe_connected').catch(() => {});
+}
+
+// Asks Stripe for the live answer. Separate from the above because it's a
+// network round trip — used when the Payouts view opens and after onboarding.
+async function refreshPayoutStatus({ quiet = false } = {}) {
+    try {
+        renderPayoutState(await core.invoke('refresh_payout_status'));
+        core.invoke('publish_stripe_connected').catch(() => {});
+    } catch (err) {
+        if (!quiet) setStatus(`Couldn't check with Stripe: ${err}`);
+    }
 }
 
 async function openPayoutsView() {
@@ -838,18 +851,62 @@ async function openPayoutsView() {
     renderPayoutsLists();
     await renderPayoutStatus();
     showView('payouts');
+    // The cached state is on screen already; correct it in the background.
+    refreshPayoutStatus({ quiet: true });
 }
 
 payoutsNavBtn.addEventListener('click', openPayoutsView);
 stripeRequiredConnectBtn.addEventListener('click', openPayoutsView);
 
-// Re-check whenever the app regains focus — the user completes onboarding
-// in the system browser, then switches back to Gelder.
+// Onboarding can also be finished on another device (or in Stripe's own
+// dashboard), so re-check whenever the user comes back to this view.
 document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && !payoutsView.hidden) {
-        renderPayoutStatus();
+        refreshPayoutStatus({ quiet: true });
     }
 });
+
+// Presents Stripe's onboarding sheet. `country`/`email` are only used the
+// first time, to create the account; afterwards the same call reopens
+// onboarding where the user left off, which is also how "Finish Setup" and
+// "Update Payout Details" work.
+async function presentStripeOnboarding({ country, email } = {}) {
+    const session = await core.invoke('start_stripe_onboarding', {
+        country: country ?? null,
+        email: email ?? null,
+    });
+
+    // Sessions expire; the SDK asks for a fresh secret through this channel
+    // rather than tearing down the sheet the user is in the middle of.
+    const onRefresh = new Channel();
+    onRefresh.onmessage = async () => {
+        let clientSecret = null;
+        try {
+            clientSecret = (await core.invoke('start_stripe_onboarding', { country: null, email: null })).clientSecret;
+        } catch (err) {
+            setStatus(`Stripe session expired: ${err}`);
+        }
+        await core.invoke('plugin:stripe-connect|provide_client_secret', { clientSecret });
+    };
+
+    const result = await core.invoke('plugin:stripe-connect|present_onboarding', {
+        publishableKey: session.publishableKey,
+        clientSecret: session.clientSecret,
+        onRefresh,
+    });
+    if (result?.error) setStatus(`Stripe onboarding: ${result.error}`);
+
+    // The sheet closing says nothing about whether the account is payable —
+    // only Stripe can answer that.
+    await refreshPayoutStatus();
+    if (payoutStatus.connected) {
+        setStatus('Payouts are set up — you can create invoices now.');
+    } else if (payoutStatus.detailsSubmitted) {
+        setStatus('Details submitted. Stripe is reviewing them.');
+    } else {
+        setStatus('Setup is unfinished — you can pick up where you left off.');
+    }
+}
 
 payoutsForm.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -858,39 +915,39 @@ payoutsForm.addEventListener('submit', async (e) => {
     if (!country || !email) return;
 
     payoutsConnectBtn.disabled = true;
-    setStatus('Starting Stripe onboarding…');
+    setStatus('Opening Stripe…');
     try {
-        const result = await core.invoke('connect_stripe_account', { country, email });
-        if (result.onboardingUrl) {
-            setOnboardingPending(result.onboardingUrl);
-            await openInBrowser(result.onboardingUrl);
-            setStatus('Finish onboarding in your browser, then come back here.');
-        } else if (result.alreadyConnected) {
-            clearOnboardingPending();
-            setStatus('Stripe account connected!');
-        }
-        await renderPayoutStatus();
+        await presentStripeOnboarding({ country, email });
     } catch (err) {
-        setStatus(`Couldn't connect: ${err}`);
+        setStatus(`Couldn't start setup: ${err}`);
     } finally {
         payoutsConnectBtn.disabled = false;
     }
 });
 
-payoutsReopenBtn.addEventListener('click', async () => {
-    const url = localStorage.getItem(STRIPE_ONBOARDING_URL_KEY);
-    if (!url) return;
-    try {
-        await openInBrowser(url);
-    } catch (err) {
-        setStatus(`Couldn't reopen: ${err}`);
-    }
-});
+for (const btn of [payoutsResumeBtn, payoutsManageBtn]) {
+    btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        setStatus('Opening Stripe…');
+        try {
+            await presentStripeOnboarding();
+        } catch (err) {
+            setStatus(`Couldn't open Stripe: ${err}`);
+        } finally {
+            btn.disabled = false;
+        }
+    });
+}
 
-payoutsDoneBtn.addEventListener('click', async () => {
-    clearOnboardingPending();
-    await renderPayoutStatus();
-    setStatus(stripeConnected ? 'Stripe account connected!' : 'Status updated.');
+payoutsRefreshBtn.addEventListener('click', async () => {
+    payoutsRefreshBtn.disabled = true;
+    setStatus('Checking with Stripe…');
+    try {
+        await refreshPayoutStatus();
+        setStatus(payoutStatus.connected ? 'Ready to get paid.' : 'Stripe is still reviewing your details.');
+    } finally {
+        payoutsRefreshBtn.disabled = false;
+    }
 });
 
 payoutsCloseBtn.addEventListener('click', () => showView(prePayoutsView));
@@ -919,50 +976,10 @@ profileForm.addEventListener('submit', async (e) => {
 
 profileCloseBtn.addEventListener('click', () => showView(preProfileView));
 
-// ── Deep links ───────────────────────────────────────────────────────────────
-//
-// Stripe's hosted onboarding returns to gelder://stripe-return (see
-// STRIPE_ONBOARDING_RETURN_URL in src-tauri/src/lib.rs) once the user
-// finishes or abandons the flow. iOS hands that off to us here instead of
-// requiring the "I've Finished Onboarding" button — that button stays as a
-// fallback for cases where the OS doesn't switch back automatically.
-
-function handleDeepLink(url) {
-    let parsed;
-    try {
-        parsed = new URL(url);
-    } catch {
-        return;
-    }
-    if (parsed.protocol !== 'gelder:') return;
-    if (parsed.hostname === 'stripe-return' || parsed.pathname.replace(/^\/+/, '') === 'stripe-return') {
-        clearOnboardingPending();
-        renderPayoutStatus();
-        setStatus(stripeConnected ? 'Stripe account connected!' : 'Welcome back — checking payout status…');
-    }
-}
-
-if (window.__TAURI__?.event) {
-    // Registers the gelder:// scheme with the OS on desktop; unsupported (and
-    // unnecessary) on iOS, where the scheme comes from Info.plist instead.
-    core.invoke('plugin:deep-link|register', { protocols: ['gelder'] }).catch(() => {});
-
-    window.__TAURI__.event.listen('deep-link://new-url', (event) => {
-        const urls = event.payload;
-        if (Array.isArray(urls)) urls.forEach(handleDeepLink);
-        else if (typeof urls === 'string') handleDeepLink(urls);
-    });
-}
-
-// Cold start: the new-url event fires before the listener above is
-// registered, so check for a launch URL explicitly once the webview is up.
-core.invoke('plugin:deep-link|get_current').then(urls => {
-    if (!urls || (Array.isArray(urls) && urls.length === 0)) return;
-    setTimeout(() => {
-        if (Array.isArray(urls)) urls.forEach(handleDeepLink);
-        else if (typeof urls === 'string') handleDeepLink(urls);
-    }, 300);
-}).catch(() => {});
+// No deep-link handling: onboarding happens inside the app now, so nothing
+// leaves it and comes back. The gelder:// scheme stays registered (see
+// tauri.conf.json) so old Stripe return URLs still open the app rather than
+// failing — they just land on the normal launch view.
 
 showView('list');
 loadInvoices();

@@ -33,6 +33,15 @@ const { execSync, spawnSync } = require('child_process');
 const ROOT = path.join(__dirname, '..');
 const TEAM_ID = 'PCUFMY9NKZ';
 
+// Xcode's "Build Rust Code" phase runs `tauri ios xcode-script ... ${FORCE_COLOR} ${ARCHS}`.
+// If FORCE_COLOR is inherited as a bare value (e.g. "3") it lands in the arch list and
+// tauri fails with "{arch} isn't a known arch". Tauri sets it itself when it wants it.
+delete process.env.FORCE_COLOR;
+
+// Stripe Connect iOS SDK — pinned, because an onboarding UI that silently
+// changes under us is not something to discover from a user's bug report.
+const STRIPE_SDK_VERSION = '26.11.0';
+
 // ── 1. Bump build number ──────────────────────────────────────────────────────
 const buildNumberFile = path.join(ROOT, '.build-number');
 const prevBuildNumber = fs.existsSync(buildNumberFile)
@@ -84,6 +93,43 @@ if (projectYml.includes('UISupportedInterfaceOrientations~ipad')) {
     '\n'
   );
   console.log('    Removed iPad-only orientation keys (iPhone-only target)');
+}
+
+// ── 3a1. Stripe Connect SDK + its app-target bridge ─────────────────────────
+// The SDK is linked into the APP target, not into the plugin: Tauri builds
+// plugin Swift packages as static libraries, which drops the SwiftPM resource
+// bundles the Stripe SDK needs at runtime. tauri-plugin-stripe-connect's
+// app-target/ holds the one Swift file that imports it and does the
+// presenting; the plugin reaches it by class name. See that plugin's
+// src/lib.rs.
+const stripeBridgeDir = '../../tauri-plugin-stripe-connect/app-target';
+if (!projectYml.includes(stripeBridgeDir)) {
+  projectYml = projectYml.replace(
+    '      - path: ../../ios-native\n',
+    `      - path: ../../ios-native\n      - path: ${stripeBridgeDir}\n`
+  );
+  console.log('    Added Stripe Connect bridge source path');
+}
+if (!projectYml.includes('packages:')) {
+  projectYml = projectYml.replace(
+    '\ntargets:\n',
+    `\npackages:\n  StripeConnect:\n    url: https://github.com/stripe/stripe-ios-spm\n    exactVersion: ${STRIPE_SDK_VERSION}\ntargets:\n`
+  );
+  projectYml = projectYml.replace(
+    '      - sdk: WebKit.framework\n',
+    '      - sdk: WebKit.framework\n      - package: StripeConnect\n        product: StripeConnect\n'
+  );
+  console.log(`    Added Stripe Connect SDK package (${STRIPE_SDK_VERSION})`);
+}
+
+// The SDK asserts on this key at init even when it never opens the camera —
+// Stripe's identity-document step can, during account onboarding.
+if (!projectYml.includes('NSCameraUsageDescription')) {
+  projectYml = projectYml.replace(
+    '        UILaunchStoryboardName: LaunchScreen\n',
+    '        UILaunchStoryboardName: LaunchScreen\n        NSCameraUsageDescription: Stripe may use the camera to photograph an ID document when you set up payouts.\n'
+  );
+  console.log('    Declared NSCameraUsageDescription (required by the Stripe Connect SDK)');
 }
 
 // ── 3b. Declare exempt encryption — the app only ever speaks HTTPS, which

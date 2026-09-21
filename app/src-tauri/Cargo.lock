@@ -1180,6 +1180,7 @@ dependencies = [
  "tauri-plugin-fs",
  "tauri-plugin-share-sheet",
  "tauri-plugin-shell",
+ "tauri-plugin-stripe-connect",
 ]
 
 [[package]]
@@ -4072,6 +4073,14 @@ dependencies = [
  "tauri-plugin",
  "thiserror 2.0.20",
  "tokio",
+]
+
+[[package]]
+name = "tauri-plugin-stripe-connect"
+version = "0.1.0"
+dependencies = [
+ "tauri",
+ "tauri-plugin",
 ]
 
 [[package]]

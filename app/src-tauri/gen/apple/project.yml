@@ -24,6 +24,10 @@ targetTemplates:
         RUST_LOG: info
     settings:
       groups: [app]
+packages:
+  StripeConnect:
+    url: https://github.com/stripe/stripe-ios-spm
+    exactVersion: 26.11.0
 targets:
   gelder_iOS:
     type: application
@@ -38,12 +42,14 @@ targets:
         type: folder
       - path: LaunchScreen.storyboard
       - path: ../../ios-native
+      - path: ../../tauri-plugin-stripe-connect/app-target
     info:
       path: gelder_iOS/Info.plist
       properties:
         LSRequiresIPhoneOS: true
         UILaunchStoryboardName: LaunchScreen
         ITSAppUsesNonExemptEncryption: false
+        NSCameraUsageDescription: Stripe may use the camera to photograph an ID document when you set up payouts.
         UIRequiredDeviceCapabilities: [arm64, metal]
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -78,6 +84,8 @@ targets:
       - sdk: Security.framework
       - sdk: UIKit.framework
       - sdk: WebKit.framework
+      - package: StripeConnect
+        product: StripeConnect
     preBuildScripts:
       - script: npm run -- tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths "${FRAMEWORK_SEARCH_PATHS:?}" --header-search-paths "${HEADER_SEARCH_PATHS:?}" --gcc-preprocessor-definitions "${GCC_PREPROCESSOR_DEFINITIONS:-}" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}
         name: Build Rust Code
