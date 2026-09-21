@@ -225,10 +225,6 @@ pub struct PayoutRecord {
 }
 
 impl PayoutRecord {
-    fn is_sent(&self) -> bool {
-        self.state == "sent"
-    }
-
     /// Worth another look: a failure that might clear (onboarding finished,
     /// eumachia reachable again). `already_paid_out` is excluded — Stripe
     /// refusing a duplicate means the money did go out.
@@ -1001,7 +997,10 @@ async fn check_payment_status(app: tauri::AppHandle, id: String) -> Result<Payme
     // failed has since gone through. An invoice that is paid AND paid out is
     // finished; so is a waived, canceled, or converted one.
     let unresolved_payout = match store.invoices[index].payout.as_ref() {
-        Some(payout) => !payout.is_sent(),
+        // Only a failure that might still clear is worth asking about again.
+        // "sent" is finished; so is "none" (nothing to pay) and
+        // "already_paid_out" (Stripe refused a duplicate, so the money went).
+        Some(payout) => payout.is_retryable(),
         // Nothing recorded yet. Worth asking only if there was ever a payout
         // to make: an invoice with no creator pubkey has no destination, so
         // eumachia never attempts one and would never have anything to
