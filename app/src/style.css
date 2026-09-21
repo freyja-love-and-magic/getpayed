@@ -659,3 +659,39 @@ textarea {
 .status-msg.visible {
     opacity: 1;
 }
+
+
+/* ── Payout panel (invoice detail) ──────────────────────────────────────────
+   Three tones, because the difference between "the money reached you" and
+   "it didn't" is the whole point of the panel: evergreen reassures, amber
+   says something needs doing, faint grey admits we don't know yet. A left
+   border rather than a filled block, so it reads as an annotation on the
+   invoice instead of a second status stamp competing with the badge above.
+   Colours come from the palette variables so the panel follows dark mode. */
+.payout-panel {
+    margin: 12px 0 4px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border-left: 3px solid var(--fg-faint);
+    background: var(--white-10);
+    text-align: left;
+}
+
+.payout-panel .payout-headline {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--fg);
+}
+
+.payout-panel .hint {
+    margin: 6px 0 0;
+}
+
+.payout-panel.payout-ok {
+    border-left-color: var(--green);
+}
+
+.payout-panel.payout-warn {
+    border-left-color: var(--amber);
+}

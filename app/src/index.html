@@ -94,6 +94,15 @@
                 <p class="invoice-meta" id="detail-status-note" hidden></p>
                 <p class="invoice-meta" id="detail-converted-link" hidden></p>
 
+                <!-- Payout panel. Being paid and the money reaching you are
+                     two different things: an invoice can read Paid while the
+                     transfer to your Stripe account was refused. This says
+                     which happened, and what to do about it. -->
+                <div class="payout-panel" id="detail-payout" hidden>
+                    <p class="payout-headline" id="detail-payout-headline"></p>
+                    <p class="hint" id="detail-payout-detail" hidden></p>
+                </div>
+
                 <div class="link-row" id="pay-link-row" hidden>
                     <span class="link-text" id="pay-link-text"></span>
                     <button type="button" class="btn btn-secondary btn-copy" id="copy-pay-link-btn">Copy</button>

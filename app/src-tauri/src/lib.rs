@@ -17,14 +17,11 @@ use tauri::Manager;
 // — which is also what keeps iOS ATS happy, since the services themselves
 // speak plain HTTP and are not reachable directly from outside.
 const GATEWAY_BDO_URL: &str = "https://dev.8as.world/bdo/";
-// NOTE: nginx has no /savage/ route yet, so publishing works but the share
-// link this produces 404s until that route is added server-side.
 const SAVAGE_URL: &str = "https://dev.8as.world/savage/";
 // eumachia is the only piece of this stack that can render a real,
 // interactive "Pay Now" page — savage strips all JavaScript from whatever
 // it serves, so it can't host a Stripe checkout itself (verified this
 // session while designing eumachia).
-// NOTE: nginx has no /eumachia/ route yet either — pay links 404 until it does.
 const EUMACHIA_PAY_URL: &str = "https://dev.8as.world/eumachia/pay/";
 const BDO_HASH: &str = "gelder-invoice";
 
@@ -147,6 +144,12 @@ pub struct Invoice {
     pub status_note: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paid_at: Option<String>,
+    /// What happened when eumachia tried to pay this out to the creator's
+    /// Stripe account. `None` on anything never paid online — and on
+    /// invoices paid before eumachia started reporting this, which is why
+    /// the UI treats absent as "unknown" rather than "failed".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payout: Option<PayoutRecord>,
     /// Set on an Estimate when `convert_estimate_to_invoice` runs — points
     /// at the id of the invoice it spawned. Provides the bidirectional
     /// link (estimate → invoice); the invoice itself has no back-pointer.
@@ -188,6 +191,68 @@ impl Invoice {
     fn is_terminal(&self) -> bool {
         !matches!(self.status, InvoiceStatus::Pending)
     }
+}
+
+/// eumachia's account of the payout leg, cached onto the invoice so the
+/// list and detail views work offline. Mirrors what `/pay/:uuid/status`
+/// returns under `payout` (see eumachia's payments.js `summarizePayout`).
+///
+/// This exists because "the invoice was paid" and "the money reached me"
+/// are different facts, and for most of this app's life only the first was
+/// knowable: a payout could fail — unfinished Stripe onboarding, say — and
+/// the invoice would still read "Paid" with the creator's money sitting on
+/// the platform.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PayoutRecord {
+    /// "sent" | "failed" | "none" — anything else is treated as unknown.
+    pub state: String,
+    /// Why it failed, classified by eumachia: `onboarding_incomplete`,
+    /// `no_payout_account`, `already_paid_out`, `platform_funds`,
+    /// `payment_not_succeeded`, `unreachable`, `unknown`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Cents actually transferred, when it sent. Less than the invoice
+    /// total: the platform keeps 9%.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub amount: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transfer_id: Option<String>,
+    /// Stripe's own wording. Shown only as supporting detail — the app
+    /// branches on `reason`, never on this string.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl PayoutRecord {
+    fn is_sent(&self) -> bool {
+        self.state == "sent"
+    }
+
+    /// Worth another look: a failure that might clear (onboarding finished,
+    /// eumachia reachable again). `already_paid_out` is excluded — Stripe
+    /// refusing a duplicate means the money did go out.
+    fn is_retryable(&self) -> bool {
+        self.state == "failed"
+            && !matches!(self.reason.as_deref(), Some("already_paid_out"))
+    }
+}
+
+/// What `check_payment_status` learned. Richer than the bool it used to
+/// return, because "paid" alone can't distinguish a completed sale from one
+/// where the creator was never paid.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PaymentCheck {
+    /// Something changed locally and the views should re-render.
+    pub changed: bool,
+    pub paid: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payout: Option<PayoutRecord>,
+    /// True when this invoice names a payout identity this install no
+    /// longer has — the usual cause of a `no_payout_account` failure, and
+    /// unfixable from here (the account belongs to the old install).
+    pub payout_identity_stale: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -921,7 +986,7 @@ async fn convert_estimate_to_invoice(
 /// re-published the invoice as paid) — the frontend uses this to decide
 /// whether to refresh its list.
 #[tauri::command]
-async fn check_payment_status(app: tauri::AppHandle, id: String) -> Result<bool, String> {
+async fn check_payment_status(app: tauri::AppHandle, id: String) -> Result<PaymentCheck, String> {
     let mut store = read_invoices(&app)?;
     let index = store
         .invoices
@@ -929,12 +994,31 @@ async fn check_payment_status(app: tauri::AppHandle, id: String) -> Result<bool,
         .position(|i| i.id == id)
         .ok_or_else(|| "Invoice not found".to_string())?;
 
-    // Only Pending invoices are worth polling. Anything else (already-paid,
-    // waived, canceled, or an estimate) is a no-op — a paid check on a
-    // converted estimate would just be wasted network.
-    if !matches!(store.invoices[index].status, InvoiceStatus::Pending) {
-        return Ok(false);
+    let stale = payout_identity_is_stale(&app, &store.invoices[index]);
+
+    // Worth asking eumachia when either fact might still change: whether it
+    // was paid, or — for something already paid — whether the payout that
+    // failed has since gone through. An invoice that is paid AND paid out is
+    // finished; so is a waived, canceled, or converted one.
+    let unresolved_payout = match store.invoices[index].payout.as_ref() {
+        Some(payout) => !payout.is_sent(),
+        // Nothing recorded yet. Worth asking only if there was ever a payout
+        // to make: an invoice with no creator pubkey has no destination, so
+        // eumachia never attempts one and would never have anything to
+        // report — polling it forever would be pointless.
+        None => store.invoices[index].creator_addie_pub_key.is_some(),
+    };
+    let worth_polling = matches!(store.invoices[index].status, InvoiceStatus::Pending)
+        || (matches!(store.invoices[index].status, InvoiceStatus::PaidStripe) && unresolved_payout);
+    if !worth_polling {
+        return Ok(PaymentCheck {
+            changed: false,
+            paid: !matches!(store.invoices[index].status, InvoiceStatus::Pending),
+            payout: store.invoices[index].payout.clone(),
+            payout_identity_stale: stale,
+        });
     }
+
     let uuid = store.invoices[index]
         .bdo_uuid_by_env
         .get(GATEWAY_ENV)
@@ -943,32 +1027,149 @@ async fn check_payment_status(app: tauri::AppHandle, id: String) -> Result<bool,
             "This invoice was published under a different environment and can't be checked from here.".to_string()
         })?;
 
-    let status_url = format!("{EUMACHIA_PAY_URL}{uuid}/status");
+    let status = fetch_payment_status(&uuid).await?;
+    let paid = status.get("paid").and_then(|v| v.as_bool()).unwrap_or(false);
+    let payout: Option<PayoutRecord> = status
+        .get("payout")
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
 
+    if !paid {
+        return Ok(PaymentCheck { changed: false, paid: false, payout: None, payout_identity_stale: stale });
+    }
+
+    let invoice = &mut store.invoices[index];
+    let newly_paid = !matches!(invoice.status, InvoiceStatus::PaidStripe);
+    let payout_changed = invoice.payout != payout;
+    if newly_paid {
+        invoice.status = InvoiceStatus::PaidStripe;
+        invoice.paid_at = Some(unix_now_ms_string());
+    }
+    if payout_changed {
+        invoice.payout = payout.clone();
+    }
+
+    if newly_paid || payout_changed {
+        let updated = store.invoices[index].clone();
+        // The payout record is local bookkeeping, not part of what a payer
+        // sees, so only a genuine status change is worth republishing.
+        if newly_paid {
+            republish_invoice(&app, &updated).await?;
+        }
+        write_invoices(&app, &store)?;
+    }
+
+    Ok(PaymentCheck {
+        changed: newly_paid || payout_changed,
+        paid: true,
+        payout,
+        payout_identity_stale: stale,
+    })
+}
+
+async fn fetch_payment_status(uuid: &str) -> Result<serde_json::Value, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| e.to_string())?;
     let resp = client
-        .get(&status_url)
+        .get(format!("{EUMACHIA_PAY_URL}{uuid}/status"))
         .send()
         .await
         .map_err(|e| format!("Couldn't reach eumachia: {e}"))?;
     if !resp.status().is_success() {
-        return Ok(false);
+        return Ok(serde_json::json!({ "paid": false }));
     }
-    let status: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-    let paid = status.get("paid").and_then(|v| v.as_bool()).unwrap_or(false);
-    if !paid {
-        return Ok(false);
+    resp.json().await.map_err(|e| e.to_string())
+}
+
+/// True when the invoice names a payout identity this install no longer
+/// holds. Reinstalling getpayed mints a fresh Addie identity, so an invoice
+/// still circulating from before names a pubkey whose Stripe account this
+/// device can't reach — the payout fails as `no_payout_account` and no
+/// amount of retrying from here will fix it.
+fn payout_identity_is_stale(app: &tauri::AppHandle, invoice: &Invoice) -> bool {
+    let Some(invoice_key) = invoice.creator_addie_pub_key.as_deref() else {
+        return false;
+    };
+    match read_addie_identity(app) {
+        Some(identity) => identity.pub_key_hex != invoice_key,
+        // No identity at all: nothing to compare against, and the Payouts
+        // view already tells them to set payouts up.
+        None => false,
+    }
+}
+
+/// Asks eumachia to try the payout again — for an invoice that was paid but
+/// whose money never reached the creator. Signed with the invoice's own BDO
+/// keypair, the same credentials its pay link carries, because eumachia
+/// verifies the caller can read the invoice before moving anything.
+///
+/// Safe to call more than once: eumachia returns an already-sent payout
+/// untouched, and Stripe caps transfers at the funding charge's amount.
+#[tauri::command]
+async fn retry_payout(app: tauri::AppHandle, id: String) -> Result<PaymentCheck, String> {
+    let mut store = read_invoices(&app)?;
+    let index = store
+        .invoices
+        .iter()
+        .position(|i| i.id == id)
+        .ok_or_else(|| "Invoice not found".to_string())?;
+
+    let uuid = store.invoices[index]
+        .bdo_uuid_by_env
+        .get(GATEWAY_ENV)
+        .cloned()
+        .ok_or_else(|| {
+            "This invoice was published under a different environment and can't be retried from here.".to_string()
+        })?;
+
+    let sessionless = load_or_create_bdo_sessionless(&app, &id)?;
+    let timestamp = unix_now_ms_string();
+    let signature = sessionless
+        .sign(format!("{timestamp}{uuid}{BDO_HASH}"))
+        .to_hex();
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
+        .post(format!("{EUMACHIA_PAY_URL}{uuid}/payout"))
+        .json(&serde_json::json!({
+            "hash": BDO_HASH,
+            "timestamp": timestamp,
+            "signature": signature,
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("Couldn't reach eumachia: {e}"))?;
+
+    let http_status = resp.status();
+    let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    if !http_status.is_success() {
+        let message = body
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("eumachia refused the retry");
+        return Err(message.to_string());
     }
 
-    store.invoices[index].status = InvoiceStatus::PaidStripe;
-    store.invoices[index].paid_at = Some(unix_now_ms_string());
-    let updated = store.invoices[index].clone();
-    republish_invoice(&app, &updated).await?;
-    write_invoices(&app, &store)?;
-    Ok(true)
+    let payout: Option<PayoutRecord> = body
+        .get("payout")
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
+
+    let changed = store.invoices[index].payout != payout;
+    if changed {
+        store.invoices[index].payout = payout.clone();
+        write_invoices(&app, &store)?;
+    }
+
+    Ok(PaymentCheck {
+        changed,
+        paid: true,
+        payout,
+        payout_identity_stale: payout_identity_is_stale(&app, &store.invoices[index]),
+    })
 }
 
 // ── Canonical profile ───────────────────────────────────────────────────────
@@ -1127,6 +1328,7 @@ pub fn run() {
             set_invoice_status,
             convert_estimate_to_invoice,
             check_payment_status,
+            retry_payout,
             get_payout_status,
             refresh_payout_status,
             start_stripe_onboarding,
