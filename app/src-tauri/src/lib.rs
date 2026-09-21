@@ -1225,6 +1225,13 @@ pub struct CanonicalProfile {
     /// touched yet", not the same as false.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stripe_connected: Option<bool>,
+    /// The Addie public key payouts are routed to — the identifier Addie
+    /// resolves to a Stripe connected account when it transfers money (see
+    /// `creator_addie_pub_key` on an invoice, which is the same key). This
+    /// app owns the write: it is the only one that runs Stripe onboarding.
+    /// Sibling apps read it so a referral they publish can name who to pay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payout_pub_key: Option<String>,
     pub updated_at: Option<String>,
 }
 
@@ -1269,6 +1276,7 @@ async fn save_canonical_profile(app: tauri::AppHandle, mut profile: CanonicalPro
         if profile.service_zip.is_none() { profile.service_zip = existing.service_zip; }
         if profile.idothis_rate_cents.is_none() { profile.idothis_rate_cents = existing.idothis_rate_cents; }
         if profile.stripe_connected.is_none() { profile.stripe_connected = existing.stripe_connected; }
+        if profile.payout_pub_key.is_none() { profile.payout_pub_key = existing.payout_pub_key; }
     }
 
     let mut deduped: Vec<CanonicalField> = Vec::new();
@@ -1291,18 +1299,36 @@ async fn save_canonical_profile(app: tauri::AppHandle, mut profile: CanonicalPro
 }
 
 /// Publishes the current local Stripe-connection state to the shared
-/// canonical profile so sibling apps (idothis in particular) can gate on
-/// it without having to run their own onboarding flow. Called on
+/// canonical profile so sibling apps can act on it without running their
+/// own onboarding flow: idothis gates its "Join" on it, and bizbuz /
+/// linkitylink name `payout_pub_key` on the referral cards they publish so
+/// a future payout has somewhere to go. Called on
 /// getpayed startup and after onboarding. "Connected" means Stripe says the
 /// account can receive payouts — not merely that one exists.
 #[tauri::command]
 async fn publish_stripe_connected(app: tauri::AppHandle) -> Result<(), String> {
-    let connected = read_addie_identity(&app)
-        .and_then(|i| i.stripe_status)
-        .map(|status| is_payout_ready(&status))
+    let identity = read_addie_identity(&app);
+    let connected = identity
+        .as_ref()
+        .and_then(|i| i.stripe_status.as_ref())
+        .map(is_payout_ready)
         .unwrap_or(false);
+    // The payout key goes out as soon as a Stripe account EXISTS, not only
+    // once it's fully payout-ready — same rule as the snapshot on an
+    // invoice. A referral shared today may be paid weeks from now, by which
+    // time onboarding is likely finished; naming the destination early
+    // costs nothing, and naming none at all would lose the attribution for
+    // good. `stripe_connected` remains the strict readiness signal.
+    let payout_pub_key = identity
+        .as_ref()
+        .filter(|i| i.stripe_account_id.is_some())
+        .map(|i| i.pub_key_hex.clone());
+
     let mut profile = load_canonical_profile(app.clone()).await?.unwrap_or_default();
     profile.stripe_connected = Some(connected);
+    if payout_pub_key.is_some() {
+        profile.payout_pub_key = payout_pub_key;
+    }
     profile.updated_at = Some(unix_now_ms_string());
     let json = serde_json::to_string(&profile).map_err(|e| e.to_string())?;
     tauri_plugin_app_group::write_value_sync(&app, "canonical.profile", &json)?;
@@ -1337,4 +1363,38 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running gelder");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The payout key crosses app boundaries as JSON in the App Group, and
+    /// each app keeps its OWN copy of the CanonicalProfile struct — four
+    /// copies that have to agree. This pins the contract on the app that writes it: an
+    /// unknown future field must not break the parse, and a profile saved
+    /// from here must keep the key.
+    #[test]
+    fn canonical_profile_round_trips_payout_key() {
+        let shared = r#"{
+            "photo": null,
+            "fields": [{"slug":"name","name":"Name","value":"Ada"}],
+            "stripeConnected": true,
+            "payoutPubKey": "02c956a0ea38fbff0f33a538df041b5d135a6411c34f390b2203effefd5160fd2f",
+            "someFutureField": {"nested": true},
+            "updatedAt": "1790000000000"
+        }"#;
+
+        let profile: CanonicalProfile = serde_json::from_str(shared).expect("shared profile should parse");
+        assert_eq!(
+            profile.payout_pub_key.as_deref(),
+            Some("02c956a0ea38fbff0f33a538df041b5d135a6411c34f390b2203effefd5160fd2f")
+        );
+
+        let json = serde_json::to_string(&profile).unwrap();
+        assert!(json.contains("\"payoutPubKey\""), "got {json}");
+
+        let no_key: CanonicalProfile = serde_json::from_str(r#"{"fields":[]}"#).unwrap();
+        assert_eq!(no_key.payout_pub_key, None);
+    }
 }
