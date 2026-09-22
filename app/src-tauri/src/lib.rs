@@ -1205,6 +1205,25 @@ pub struct Address {
     pub zip: String,
 }
 
+/// Where this person's payouts go.
+///
+/// The pair travels as a unit on purpose. Once Addie is distributed — which
+/// production is — a public key alone is ambiguous: it only means anything
+/// resolved against the Addie instance holding that account. Addie's own
+/// payee shape carries the same two fields (`pubKey` + `addieURL`, see
+/// buildPayeeMetadata and /verify-payee in its stripe processor), so this
+/// can be lifted straight into a payout request. Keeping them in one struct
+/// also makes it impossible to update half the tuple and route money at a
+/// key the wrong base has never heard of.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PayoutDestination {
+    pub pub_key: String,
+    /// Spelled `addieURL` to match Addie's own field, not Rust convention.
+    #[serde(rename = "addieURL")]
+    pub addie_url: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct CanonicalProfile {
@@ -1225,13 +1244,11 @@ pub struct CanonicalProfile {
     /// touched yet", not the same as false.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stripe_connected: Option<bool>,
-    /// The Addie public key payouts are routed to — the identifier Addie
-    /// resolves to a Stripe connected account when it transfers money (see
-    /// `creator_addie_pub_key` on an invoice, which is the same key). This
-    /// app owns the write: it is the only one that runs Stripe onboarding.
-    /// Sibling apps read it so a referral they publish can name who to pay.
+    /// Where payouts land. This app owns the write — it is the only one that
+    /// runs Stripe onboarding. Sibling apps read it so a referral they
+    /// publish can name who to pay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub payout_pub_key: Option<String>,
+    pub payout: Option<PayoutDestination>,
     pub updated_at: Option<String>,
 }
 
@@ -1276,7 +1293,7 @@ async fn save_canonical_profile(app: tauri::AppHandle, mut profile: CanonicalPro
         if profile.service_zip.is_none() { profile.service_zip = existing.service_zip; }
         if profile.idothis_rate_cents.is_none() { profile.idothis_rate_cents = existing.idothis_rate_cents; }
         if profile.stripe_connected.is_none() { profile.stripe_connected = existing.stripe_connected; }
-        if profile.payout_pub_key.is_none() { profile.payout_pub_key = existing.payout_pub_key; }
+        if profile.payout.is_none() { profile.payout = existing.payout; }
     }
 
     let mut deduped: Vec<CanonicalField> = Vec::new();
@@ -1301,8 +1318,8 @@ async fn save_canonical_profile(app: tauri::AppHandle, mut profile: CanonicalPro
 /// Publishes the current local Stripe-connection state to the shared
 /// canonical profile so sibling apps can act on it without running their
 /// own onboarding flow: idothis gates its "Join" on it, and bizbuz /
-/// linkitylink name `payout_pub_key` on the referral cards they publish so
-/// a future payout has somewhere to go. Called on
+/// linkitylink name this `payout` destination on the referral cards they
+/// publish so a future payout has somewhere to go. Called on
 /// getpayed startup and after onboarding. "Connected" means Stripe says the
 /// account can receive payouts — not merely that one exists.
 #[tauri::command]
@@ -1313,21 +1330,28 @@ async fn publish_stripe_connected(app: tauri::AppHandle) -> Result<(), String> {
         .and_then(|i| i.stripe_status.as_ref())
         .map(is_payout_ready)
         .unwrap_or(false);
-    // The payout key goes out as soon as a Stripe account EXISTS, not only
+    // The destination goes out as soon as a Stripe account EXISTS, not only
     // once it's fully payout-ready — same rule as the snapshot on an
     // invoice. A referral shared today may be paid weeks from now, by which
-    // time onboarding is likely finished; naming the destination early
-    // costs nothing, and naming none at all would lose the attribution for
-    // good. `stripe_connected` remains the strict readiness signal.
-    let payout_pub_key = identity
+    // time onboarding is likely finished; naming it early costs nothing, and
+    // naming no one loses the attribution for good. `stripe_connected`
+    // remains the strict readiness signal.
+    //
+    // The Addie URL is this app's own, because this app holds the identity:
+    // the sibling apps copy the pair verbatim rather than pairing our key
+    // with whatever base they happen to talk to.
+    let payout = identity
         .as_ref()
         .filter(|i| i.stripe_account_id.is_some())
-        .map(|i| i.pub_key_hex.clone());
+        .map(|i| PayoutDestination {
+            pub_key: i.pub_key_hex.clone(),
+            addie_url: GATEWAY_ADDIE_URL.to_string(),
+        });
 
     let mut profile = load_canonical_profile(app.clone()).await?.unwrap_or_default();
     profile.stripe_connected = Some(connected);
-    if payout_pub_key.is_some() {
-        profile.payout_pub_key = payout_pub_key;
+    if payout.is_some() {
+        profile.payout = payout;
     }
     profile.updated_at = Some(unix_now_ms_string());
     let json = serde_json::to_string(&profile).map_err(|e| e.to_string())?;
@@ -1380,21 +1404,21 @@ mod tests {
             "photo": null,
             "fields": [{"slug":"name","name":"Name","value":"Ada"}],
             "stripeConnected": true,
-            "payoutPubKey": "02c956a0ea38fbff0f33a538df041b5d135a6411c34f390b2203effefd5160fd2f",
+            "payout": {"pubKey": "02c956a0ea38fbff0f33a538df041b5d135a6411c34f390b2203effefd5160fd2f", "addieURL": "https://dev.8as.world/addie/"},
             "someFutureField": {"nested": true},
             "updatedAt": "1790000000000"
         }"#;
 
         let profile: CanonicalProfile = serde_json::from_str(shared).expect("shared profile should parse");
-        assert_eq!(
-            profile.payout_pub_key.as_deref(),
-            Some("02c956a0ea38fbff0f33a538df041b5d135a6411c34f390b2203effefd5160fd2f")
-        );
+        let payout = profile.payout.clone().expect("payout destination should parse");
+        assert_eq!(payout.pub_key, "02c956a0ea38fbff0f33a538df041b5d135a6411c34f390b2203effefd5160fd2f");
+        // Both halves or neither — a key without its base routes nowhere.
+        assert_eq!(payout.addie_url, "https://dev.8as.world/addie/");
 
         let json = serde_json::to_string(&profile).unwrap();
-        assert!(json.contains("\"payoutPubKey\""), "got {json}");
+        assert!(json.contains("\"pubKey\"") && json.contains("\"addieURL\""), "got {json}");
 
         let no_key: CanonicalProfile = serde_json::from_str(r#"{"fields":[]}"#).unwrap();
-        assert_eq!(no_key.payout_pub_key, None);
+        assert_eq!(no_key.payout, None);
     }
 }
