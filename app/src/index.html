@@ -22,14 +22,14 @@
             </header>
 
             <div class="stripe-required-banner" id="stripe-required-banner" hidden>
-                <p>Connect a Stripe account before creating invoices — payments are made through Stripe, so a connected account is how you actually get paid out.</p>
+                <p>Connect a Stripe account before creating invoices. Payments are made through Stripe, so a connected account is how you actually get paid out.</p>
                 <button type="button" class="btn btn-primary" id="stripe-required-connect-btn">Connect Stripe Account</button>
             </div>
 
             <button type="button" class="btn btn-primary" id="new-invoice-btn" hidden>+ New Invoice</button>
 
             <ul class="invoice-list" id="invoice-list"></ul>
-            <p class="hint" id="empty-hint" hidden>No invoices yet — create one to get started.</p>
+            <p class="hint" id="empty-hint" hidden>No invoices yet. Create one to get started.</p>
         </section>
 
         <!-- Create view — same form for both Invoice and Estimate, toggle
@@ -122,7 +122,7 @@
         <section id="payouts-view" class="view" hidden>
             <header class="view-header">
                 <h1>Payouts</h1>
-                <p class="subtitle">Everything with an amount attached — estimates you've sent, invoices you're waiting on, and where the money lands.</p>
+                <p class="subtitle">Everything with an amount attached: estimates you've sent, invoices you're waiting on, and where the money lands.</p>
             </header>
 
             <section class="payouts-docs-section">
@@ -144,7 +144,7 @@
 
             <section class="payouts-stripe-section">
                 <p class="section-label">Payout destination</p>
-                <p class="hint">Invoice payments are made through Stripe, so a connected Stripe account is required before you can create invoices. Connecting sets up automatic payouts — you'll receive 91% of every paid invoice, with the platform keeping 9% minus processing fees.</p>
+                <p class="hint">Invoice payments are made through Stripe, so a connected Stripe account is required before you can create invoices. Connecting sets up automatic payouts. You'll receive 91% of every paid invoice, with the platform keeping 9% minus processing fees.</p>
 
                 <!-- Four states, driven by what Stripe reports about the
                      account (see renderPayoutStatus): ready to be paid,
@@ -205,7 +205,7 @@
                         <input type="text" id="profile-new-field-value" placeholder="Value">
                         <button type="button" class="btn btn-secondary" id="profile-add-field-btn">Add Field</button>
                     </div>
-                    <p class="hint" id="profile-field-limit-hint" hidden>Up to 20 fields — remove one to add another.</p>
+                    <p class="hint" id="profile-field-limit-hint" hidden>Up to 20 fields. Remove one to add another.</p>
                 </form>
             </div>
 

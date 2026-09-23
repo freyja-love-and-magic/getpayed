@@ -277,7 +277,7 @@ function setPendingKind(kind) {
         dueDateLabel.hidden = false;
     } else {
         createTitle.textContent = 'New Estimate';
-        createSubtitle.textContent = 'Estimates are quotes — no payment link, and no Stripe connection needed.';
+        createSubtitle.textContent = 'Estimates are quotes: no payment link, and no Stripe connection needed.';
         createSubmitBtn.textContent = 'Create Estimate & Share';
         // Due date is invoice-specific; estimates use `work performed` for
         // the "when the job would happen" date, so no separate due field.
@@ -315,7 +315,7 @@ async function openCreateForm(kind = 'invoice') {
     if (cachedProfileFromName) {
         fromNote.textContent = `From: ${cachedProfileFromName}`;
     } else {
-        fromNote.textContent = 'No shared profile name set yet — set one in Profile so this shows who it’s from.';
+        fromNote.textContent = 'No shared profile name set yet. Set one in Profile so this shows who it’s from.';
     }
 
     showView('create');
@@ -418,7 +418,7 @@ function renderDetail(doc) {
     // been converted. Clicking navigates to the resulting invoice.
     if (kind === 'estimate' && doc.convertedToInvoiceId) {
         detailConvertedLink.hidden = false;
-        detailConvertedLink.innerHTML = 'Converted to Invoice — <a href="#" data-invoice-id="' + doc.convertedToInvoiceId + '">open</a>';
+        detailConvertedLink.innerHTML = 'Converted to Invoice: <a href="#" data-invoice-id="' + doc.convertedToInvoiceId + '">open</a>';
         const link = detailConvertedLink.querySelector('a');
         link.addEventListener('click', (e) => {
             e.preventDefault();
@@ -464,7 +464,7 @@ function describePayout(doc, { identityStale = false } = {}) {
     if (payout?.state === 'none' || (!payout && !doc.creatorAddiePubKey)) {
         return {
             tone: 'warn',
-            headline: 'Paid — but not routed to you',
+            headline: 'Paid, but not routed to you',
             detail: 'This invoice was created before your Stripe account was connected, so it had no payout destination. New invoices will pay out to you.',
         };
     }
@@ -472,7 +472,7 @@ function describePayout(doc, { identityStale = false } = {}) {
     if (payout?.state === 'sent') {
         return {
             tone: 'ok',
-            headline: `Paid — ${formatAmount(payout.amount)} sent to your Stripe`,
+            headline: `Paid. ${formatAmount(payout.amount)} sent to your Stripe`,
             detail: 'Stripe moves it to your bank on its usual schedule.',
         };
     }
@@ -481,7 +481,7 @@ function describePayout(doc, { identityStale = false } = {}) {
         if (identityStale) {
             return {
                 tone: 'warn',
-                headline: 'Paid — payout went to a previous install',
+                headline: 'Paid, but the payout went to a previous install',
                 detail: 'This invoice names the payout identity from an earlier install of GetPayed, which this device can no longer reach. The payment itself went through; recovering it means using the device that created the invoice.',
                 action: 'contact',
             };
@@ -490,14 +490,14 @@ function describePayout(doc, { identityStale = false } = {}) {
             case 'onboarding_incomplete':
                 return {
                     tone: 'warn',
-                    headline: 'Paid — payout is waiting on your Stripe setup',
-                    detail: 'Stripe still needs details from you before it will release money to your account. Finish that and retry — the payment is safe in the meantime.',
+                    headline: 'Paid, but the payout is waiting on your Stripe setup',
+                    detail: 'Stripe still needs details from you before it will release money to your account. Finish that and retry. The payment is safe in the meantime.',
                     action: 'finish-setup',
                 };
             case 'no_payout_account':
                 return {
                     tone: 'warn',
-                    headline: 'Paid — no payout account to send it to',
+                    headline: 'Paid, but there is no payout account to send it to',
                     detail: 'Set up payouts, then retry.',
                     action: 'finish-setup',
                 };
@@ -506,14 +506,14 @@ function describePayout(doc, { identityStale = false } = {}) {
                 // worked. Not a failure to show as one.
                 return {
                     tone: 'ok',
-                    headline: 'Paid — already sent to your Stripe',
+                    headline: 'Paid. Already sent to your Stripe',
                     detail: null,
                 };
             case 'platform_funds':
             case 'unreachable':
                 return {
                     tone: 'warn',
-                    headline: 'Paid — payout could not be completed yet',
+                    headline: 'Paid, but the payout could not be completed yet',
                     detail: 'A temporary problem on our side. The payment went through; retry and it should clear.',
                     action: 'retry',
                 };
@@ -527,7 +527,7 @@ function describePayout(doc, { identityStale = false } = {}) {
             default:
                 return {
                     tone: 'warn',
-                    headline: 'Paid — payout failed',
+                    headline: 'Paid, but the payout failed',
                     detail: payout.error || 'No further detail from Stripe.',
                     action: 'retry',
                 };
@@ -539,7 +539,7 @@ function describePayout(doc, { identityStale = false } = {}) {
     // instead of implying either outcome.
     return {
         tone: 'unknown',
-        headline: 'Paid — payout not confirmed',
+        headline: 'Paid, but the payout is not confirmed',
         detail: 'Check again to find out whether the money reached your Stripe account.',
         action: 'check',
     };
@@ -634,7 +634,7 @@ async function applyStatus(status, notePrompt) {
 async function convertEstimate(estimate) {
     if (!selectedInvoiceId) return;
     if (!stripeConnected) {
-        setStatus('Connect a Stripe account before converting an estimate — the resulting invoice needs a payout destination.');
+        setStatus('Connect a Stripe account before converting an estimate. The resulting invoice needs a payout destination.');
         await openPayoutsView();
         return;
     }
@@ -682,7 +682,7 @@ async function checkPayment() {
         if (!result.paid) {
             setStatus('Not paid yet.');
         } else if (result.payout?.state === 'sent') {
-            setStatus(`Paid — ${formatAmount(result.payout.amount)} sent to your Stripe.`);
+            setStatus(`Paid. ${formatAmount(result.payout.amount)} sent to your Stripe.`);
         } else if (result.payout?.state === 'failed') {
             setStatus('Paid, but the payout to you did not go through.');
         } else {
@@ -700,7 +700,7 @@ async function retryPayout() {
         const result = await core.invoke('retry_payout', { id: selectedInvoiceId });
         await refreshAfterPaymentCheck(result);
         if (result.payout?.state === 'sent') {
-            setStatus(`Sent — ${formatAmount(result.payout.amount)} is on its way to your Stripe.`);
+            setStatus(`Sent. ${formatAmount(result.payout.amount)} is on its way to your Stripe.`);
         } else {
             setStatus('Still not through. Nothing was charged again.');
         }
@@ -1067,11 +1067,11 @@ async function presentStripeOnboarding({ country, email } = {}) {
     // only Stripe can answer that.
     await refreshPayoutStatus();
     if (payoutStatus.connected) {
-        setStatus('Payouts are set up — you can create invoices now.');
+        setStatus('Payouts are set up. You can create invoices now.');
     } else if (payoutStatus.detailsSubmitted) {
         setStatus('Details submitted. Stripe is reviewing them.');
     } else {
-        setStatus('Setup is unfinished — you can pick up where you left off.');
+        setStatus('Setup is unfinished. You can pick up where you left off.');
     }
 }
 
@@ -1134,7 +1134,7 @@ profileForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     try {
         await core.invoke('save_canonical_profile', { profile: canonicalProfileFromForm() });
-        setStatus('Profile saved — shared across your apps.');
+        setStatus('Profile saved. It is shared across your apps.');
         showView(preProfileView);
     } catch (err) {
         setStatus(`Couldn't save: ${err}`);
